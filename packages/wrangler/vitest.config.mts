@@ -65,11 +65,13 @@ export default defineConfig({
 		// eslint-disable-next-line turbo/no-undeclared-env-vars
 		outputFile: process.env.TEST_REPORT_PATH ?? ".e2e-test-report/index.html",
 		setupFiles: path.resolve(__dirname, "src/__tests__/vitest.setup.ts"),
+		globalSetup: path.resolve(__dirname, "src/__tests__/vitest.global.ts"),
 		reporters: ["default", "html"],
 		globals: true,
 		snapshotFormat: {
 			escapeString: true,
 			printBasicPrototype: true,
 		},
+		unstubEnvs: true,
 	},
 });

@@ -1,5 +1,7 @@
+import { applyCommand, applyCommandOptionalYargs } from "./apply";
 import { handleFailure } from "./common";
 import { createCommand, createCommandOptionalYargs } from "./create";
+import { curlCommand, yargsCurl } from "./curl";
 import { deleteCommand, deleteCommandOptionalYargs } from "./delete";
 import { registriesCommand } from "./images/images";
 import { listCommand, listDeploymentsYargs } from "./list";
@@ -54,5 +56,17 @@ export const cloudchamber = (
 		)
 		.command("registries", "Configure registries via Cloudchamber", (args) =>
 			registriesCommand(args).command(subHelp)
+		)
+		.command(
+			"curl <path>",
+			"send a request to an arbitrary cloudchamber endpoint",
+			(args) => yargsCurl(args),
+			(args) => handleFailure(curlCommand)(args)
+		)
+		.command(
+			"apply",
+			"apply the changes in the container applications to deploy",
+			(args) => applyCommandOptionalYargs(args),
+			(args) => handleFailure(applyCommand)(args)
 		);
 };

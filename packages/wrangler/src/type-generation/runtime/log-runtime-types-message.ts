@@ -1,4 +1,5 @@
 import { dedent } from "ts-dedent";
+import { configFileName } from "../../config";
 import { logger } from "../../logger";
 
 /**
@@ -7,7 +8,8 @@ import { logger } from "../../logger";
 export function logRuntimeTypesMessage(
 	outFile: string,
 	tsconfigTypes: string[],
-	isNodeCompat = false
+	isNodeCompat = false,
+	configPath: string | undefined
 ) {
 	const isWorkersTypesInstalled = tsconfigTypes.find((type) =>
 		type.startsWith("@cloudflare/workers-types")
@@ -48,11 +50,11 @@ export function logRuntimeTypesMessage(
 	}
 	if (isNodeCompat && !isNodeTypesInstalled) {
 		logger.info(
-			'📣 It looks like you have some Node.js compatibility turned on in your project. You might want to consider adding Node.js typings with "npm i --save-dev @types/node@20.8.3". Please see the docs for more details: https://developers.cloudflare.com/workers/languages/typescript/#transitive-loading-of-typesnode-overrides-cloudflareworkers-types'
+			'📣 Since you have Node.js compatibility mode enabled, you should consider adding Node.js for TypeScript by running "npm i --save-dev @types/node@20.8.3". Please see the docs for more details: https://developers.cloudflare.com/workers/languages/typescript/#transitive-loading-of-typesnode-overrides-cloudflareworkers-types'
 		);
 	}
 	logger.info(
-		"📣 Remember to run 'wrangler types --x-include-runtime' again if you change 'compatibility_date' or 'compatibility_flags' in your wrangler.toml.\n"
+		`📣 Remember to run 'wrangler types --x-include-runtime' again if you change 'compatibility_date' or 'compatibility_flags' in your ${configFileName(configPath)} file.\n`
 	);
 }
 

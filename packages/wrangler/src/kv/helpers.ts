@@ -13,9 +13,9 @@ import type { ReplaceWorkersTypes } from "miniflare";
 
 /** The largest number of kv items we can pass to the API in a single request. */
 const API_MAX = 10000;
-// The const below are halved from the API's true capacity to help avoid
+// The const below are lowered from the API's true capacity to help avoid
 // hammering it with large requests.
-export const BATCH_KEY_MAX = API_MAX / 2;
+export const BATCH_KEY_MAX = API_MAX / 10;
 
 type KvArgs = {
 	binding?: string;
@@ -61,7 +61,8 @@ export interface KVNamespaceInfo {
  * Fetch a list of all the namespaces under the given `accountId`.
  */
 export async function listKVNamespaces(
-	accountId: string
+	accountId: string,
+	limitCalls: boolean = false
 ): Promise<KVNamespaceInfo[]> {
 	const pageSize = 100;
 	let page = 1;
@@ -79,6 +80,9 @@ export async function listKVNamespaces(
 		);
 		page++;
 		results.push(...json);
+		if (limitCalls) {
+			break;
+		}
 		if (json.length < pageSize) {
 			break;
 		}
@@ -432,11 +436,11 @@ export function getKVNamespaceId(
 //  https://devblogs.microsoft.com/typescript/announcing-typescript-5-2/#using-declarations-and-explicit-resource-management
 export async function usingLocalNamespace<T>(
 	persistTo: string | undefined,
-	configPath: string | undefined,
+	config: Config,
 	namespaceId: string,
 	closure: (namespace: ReplaceWorkersTypes<KVNamespace>) => Promise<T>
 ): Promise<T> {
-	const persist = getLocalPersistencePath(persistTo, configPath);
+	const persist = getLocalPersistencePath(persistTo, config);
 	const persistOptions = buildPersistOptions(persist);
 	const mf = new Miniflare({
 		script:

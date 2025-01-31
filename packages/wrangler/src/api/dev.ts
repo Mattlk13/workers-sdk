@@ -1,5 +1,6 @@
+import events from "node:events";
 import { fetch, Request } from "undici";
-import { startApiDev, startDev } from "../dev";
+import { startDev } from "../dev";
 import { run } from "../experimental-flags";
 import { logger } from "../logger";
 import type { Environment } from "../config";
@@ -7,15 +8,12 @@ import type { Rule } from "../config/environment";
 import type { CfModule } from "../deployment-bundle/worker";
 import type { StartDevOptions } from "../dev";
 import type { EnablePagesAssetsServiceBindingOptions } from "../miniflare-cli/types";
-import type { ProxyData } from "./startDevWorker";
-import type { FSWatcher } from "chokidar";
-import type { Instance } from "ink";
 import type { Json } from "miniflare";
 import type { RequestInfo, RequestInit, Response } from "undici";
 
-export interface UnstableDevOptions {
+export interface Unstable_DevOptions {
 	config?: string; // Path to .toml configuration file, relative to cwd
-	env?: string; // Environment to use for operations and .env files
+	env?: string; // Environment to use for operations, and for selecting .env and .dev.vars files
 	ip?: string; // IP address to listen on
 	port?: number; // Port to listen on
 	bundle?: boolean; // Set to false to skip internal build steps and directly deploy script
@@ -23,7 +21,7 @@ export interface UnstableDevOptions {
 	localProtocol?: "http" | "https"; // Protocol to listen to requests on, defaults to http.
 	httpsKeyPath?: string;
 	httpsCertPath?: string;
-	experimentalAssets?: string; // Static assets to be served
+	assets?: string; // Static assets to be served
 	legacyAssets?: string; // Static assets to be served
 	site?: string; // Root folder of static assets for Workers Sites
 	siteInclude?: string[]; // Array of .gitignore-style patterns that match file or directory names from the sites directory. Only matched items will be uploaded.
@@ -36,7 +34,7 @@ export interface UnstableDevOptions {
 	vars?: Record<string, string | Json>;
 	kv?: {
 		binding: string;
-		id: string;
+		id?: string;
 		preview_id?: string;
 	}[];
 	durableObjects?: {
@@ -53,7 +51,7 @@ export interface UnstableDevOptions {
 	}[];
 	r2?: {
 		binding: string;
-		bucket_name: string;
+		bucket_name?: string;
 		preview_bucket_name?: string;
 	}[];
 	ai?: {
@@ -83,13 +81,14 @@ export interface UnstableDevOptions {
 		watch?: boolean; // unstable_dev doesn't support watch-mode yet in testMode
 		devEnv?: boolean;
 		fileBasedRegistry?: boolean;
+		vectorizeBindToProd?: boolean;
+		enableIpc?: boolean;
 	};
 }
 
-export interface UnstableDevWorker {
+export interface Unstable_DevWorker {
 	port: number;
 	address: string;
-	proxyData: ProxyData;
 	stop: () => Promise<void>;
 	fetch: (input?: RequestInfo, init?: RequestInit) => Promise<Response>;
 	waitUntilExit: () => Promise<void>;
@@ -99,9 +98,9 @@ export interface UnstableDevWorker {
  */
 export async function unstable_dev(
 	script: string,
-	options?: UnstableDevOptions,
+	options?: Unstable_DevOptions,
 	apiOptions?: unknown
-): Promise<UnstableDevWorker> {
+): Promise<Unstable_DevWorker> {
 	// Note that not every experimental option is passed directly through to the underlying dev API - experimental options can be used here in unstable_dev. Otherwise we could just pass experimental down to dev blindly.
 
 	const experimentalOptions = {
@@ -126,8 +125,7 @@ export async function unstable_dev(
 		showInteractiveDevSession,
 		testMode,
 		testScheduled,
-		devEnv = false,
-		fileBasedRegistry = false,
+		vectorizeBindToProd,
 		// 2. options for alpha/beta products/libs
 		d1Databases,
 		enablePagesAssetsServiceBinding,
@@ -148,7 +146,6 @@ export async function unstable_dev(
 	type ReadyInformation = {
 		address: string;
 		port: number;
-		proxyData: ProxyData;
 	};
 	let readyResolve: (info: ReadyInformation) => void;
 	const readyPromise = new Promise<ReadyInformation>((resolve) => {
@@ -173,8 +170,8 @@ export async function unstable_dev(
 		forceLocal,
 		liveReload,
 		showInteractiveDevSession,
-		onReady: (address, port, proxyData) => {
-			readyResolve({ address, port, proxyData });
+		onReady: (address, port) => {
+			readyResolve({ address, port });
 		},
 		config: options?.config,
 		env: options?.env,
@@ -189,7 +186,7 @@ export async function unstable_dev(
 		localProtocol: options?.localProtocol,
 		httpsKeyPath: options?.httpsKeyPath,
 		httpsCertPath: options?.httpsCertPath,
-		experimentalAssets: undefined,
+		assets: undefined,
 		legacyAssets: options?.legacyAssets,
 		site: options?.site, // Root folder of static assets for Workers Sites
 		siteInclude: options?.siteInclude, // Array of .gitignore-style patterns that match file or directory names from the sites directory. Only matched items will be uploaded.
@@ -197,7 +194,6 @@ export async function unstable_dev(
 		nodeCompat: options?.nodeCompat, // Enable Node.js compatibility
 		persist: options?.persist, // Enable persistence for local mode, using default path: .wrangler/state
 		persistTo: options?.persistTo, // Specify directory to use for local persistence (implies --persist)
-		experimentalJsonConfig: undefined,
 		name: undefined,
 		noBundle: false,
 		format: undefined,
@@ -220,73 +216,41 @@ export async function unstable_dev(
 		...options,
 		logLevel: options?.logLevel ?? defaultLogLevel,
 		port: options?.port ?? 0,
-		experimentalVersions: undefined,
-		experimentalDevEnv: devEnv,
-		experimentalRegistry: fileBasedRegistry,
+		experimentalProvision: undefined,
+		experimentalVectorizeBindToProd: vectorizeBindToProd ?? false,
+		enableIpc: options?.experimental?.enableIpc,
 	};
 
-	//due to Pages adoption of unstable_dev, we can't *just* disable rebuilds and watching. instead, we'll have two versions of startDev, which will converge.
-	if (testMode) {
-		// in testMode, we can run multiple wranglers in parallel, but rebuilds might not work out of the box
-		// once the devServer is ready for requests, we resolve the ready promise
-		const devServer = await startApiDev(devOptions);
-		const { port, address, proxyData } = await readyPromise;
-		return {
-			port,
-			address,
-			proxyData,
-			stop: devServer.stop,
-			fetch: async (input?: RequestInfo, init?: RequestInit) => {
-				return await fetch(
-					...parseRequestInput(
-						address,
-						port,
-						input,
-						init,
-						options?.localProtocol
-					)
-				);
-			},
-			//no-op, does nothing in tests
-			waitUntilExit: async () => {
-				return;
-			},
-		};
-	} else {
-		//outside of test mode, rebuilds work fine, but only one instance of wrangler will work at a time
-		const devServer = (await run(
-			{
-				DEV_ENV: false,
-				FILE_BASED_REGISTRY: fileBasedRegistry,
-				JSON_CONFIG_FILE: Boolean(devOptions.experimentalJsonConfig),
-			},
-			() => startDev(devOptions)
-		)) as {
-			devReactElement: Instance;
-			watcher: FSWatcher | undefined;
-			stop: () => Promise<void>;
-		};
-		const { port, address, proxyData } = await readyPromise;
+	//outside of test mode, rebuilds work fine, but only one instance of wrangler will work at a time
+	const devServer = await run(
+		{
+			// TODO: can we make this work?
+			MULTIWORKER: false,
+			RESOURCES_PROVISION: false,
+		},
+		() => startDev(devOptions)
+	);
+	const { port, address } = await readyPromise;
 
-		return {
-			port,
-			address,
-			proxyData,
-			stop: devServer.stop,
-			fetch: async (input?: RequestInfo, init?: RequestInit) => {
-				return await fetch(
-					...parseRequestInput(
-						address,
-						port,
-						input,
-						init,
-						options?.localProtocol
-					)
-				);
-			},
-			waitUntilExit: devServer.devReactElement.waitUntilExit,
-		};
-	}
+	return {
+		port,
+		address,
+		stop: async () => {
+			await devServer.devEnv.teardown.bind(devServer.devEnv)();
+			const teardownRegistry = await devServer.teardownRegistryPromise;
+			await teardownRegistry?.(devServer.devEnv.config.latestConfig?.name);
+
+			devServer.unregisterHotKeys?.();
+		},
+		fetch: async (input?: RequestInfo, init?: RequestInit) => {
+			return await fetch(
+				...parseRequestInput(address, port, input, init, options?.localProtocol)
+			);
+		},
+		waitUntilExit: async () => {
+			await events.once(devServer.devEnv, "teardown");
+		},
+	};
 }
 
 export function parseRequestInput(

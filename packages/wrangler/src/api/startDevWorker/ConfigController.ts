@@ -1,15 +1,8 @@
 import assert from "node:assert";
 import path from "node:path";
 import { watch } from "chokidar";
-import {
-	DEFAULT_INSPECTOR_PORT,
-	DEFAULT_LOCAL_PORT,
-	getDevCompatibilityDate,
-	getRules,
-	getScriptName,
-	isLegacyEnv,
-} from "../..";
-import { printBindings, readConfig } from "../../config";
+import { getAssetsOptions, validateAssetsArgsAndConfig } from "../../assets";
+import { readConfig } from "../../config";
 import { getEntry } from "../../deployment-bundle/entry";
 import {
 	getBindings,
@@ -17,12 +10,24 @@ import {
 	getInferredHost,
 	maskVars,
 } from "../../dev";
+import { getClassNamesWhichUseSQLite } from "../../dev/class-names-sqlite";
 import { getLocalPersistencePath } from "../../dev/get-local-persistence-path";
 import { UserError } from "../../errors";
 import { logger } from "../../logger";
-import { getAccountId, requireApiToken } from "../../user";
+import { requireApiToken, requireAuth } from "../../user";
+import {
+	DEFAULT_INSPECTOR_PORT,
+	DEFAULT_LOCAL_PORT,
+} from "../../utils/constants";
+import { getDevCompatibilityDate } from "../../utils/getDevCompatibilityDate";
+import { getRules } from "../../utils/getRules";
+import { getScriptName } from "../../utils/getScriptName";
+import { isLegacyEnv } from "../../utils/isLegacyEnv";
 import { memoizeGetPort } from "../../utils/memoizeGetPort";
+import { printBindings } from "../../utils/print-bindings";
+import { getZoneIdForPreview } from "../../zones";
 import { Controller } from "./BaseController";
+import { castErrorCause } from "./events";
 import {
 	convertCfWorkerInitBindingstoBindings,
 	extractBindingsOfType,
@@ -38,7 +43,7 @@ import type {
 	Trigger,
 } from "./types";
 
-export type ConfigControllerEventMap = ControllerEventMap & {
+type ConfigControllerEventMap = ControllerEventMap & {
 	configUpdate: [ConfigUpdateEvent];
 };
 
@@ -49,9 +54,20 @@ async function resolveDevConfig(
 	config: Config,
 	input: StartDevWorkerInput
 ): Promise<StartDevWorkerOptions["dev"]> {
+	const auth = async () => {
+		if (input.dev?.auth) {
+			return unwrapHook(input.dev.auth, config);
+		}
+
+		return {
+			accountId: await requireAuth(config),
+			apiToken: requireApiToken(),
+		};
+	};
+
 	const localPersistencePath = getLocalPersistencePath(
 		input.dev?.persist,
-		config.configPath
+		config
 	);
 
 	const { host, routes } = await getHostAndRoutes(
@@ -60,23 +76,29 @@ async function resolveDevConfig(
 			routes: input.triggers?.filter(
 				(t): t is Extract<Trigger, { type: "route" }> => t.type === "route"
 			),
+			assets: input?.assets,
 		},
 		config
 	);
+
+	// TODO: Remove this hack once the React flow is removed
+	// This function throws if the zone ID can't be found given the provided host and routes
+	// However, it's called as part of initialising a preview session, which is nested deep within
+	// React/Ink and useEffect()s in `--no-x-dev-env` mode which swallow the error and turn it into a logged warning.
+	// Because it's a non-recoverable user error, we want it to exit the Wrangler process early to allow the user to fix it.
+	// Calling it here forces the error to be thrown where it will correctly exit the Wrangler process.
+	if (input.dev?.remote) {
+		const { accountId } = await unwrapHook(auth, config);
+		assert(accountId, "Account ID must be provided for remote dev");
+		await getZoneIdForPreview({ host, routes, accountId });
+	}
 
 	const initialIp = input.dev?.server?.hostname ?? config.dev.ip;
 
 	const initialIpListenCheck = initialIp === "*" ? "0.0.0.0" : initialIp;
 
 	return {
-		auth:
-			input.dev?.auth ??
-			(async () => {
-				return {
-					accountId: await getAccountId(),
-					apiToken: requireApiToken(),
-				};
-			}),
+		auth,
 		remote: input.dev?.remote,
 		server: {
 			hostname: input.dev?.server?.hostname || config.dev.ip,
@@ -85,7 +107,7 @@ async function resolveDevConfig(
 				config.dev.port ??
 				(await getLocalPort(initialIpListenCheck)),
 			secure:
-				input.dev?.server?.secure || config.dev.local_protocol === "https",
+				input.dev?.server?.secure ?? config.dev.local_protocol === "https",
 			httpsKeyPath: input.dev?.server?.httpsKeyPath,
 			httpsCertPath: input.dev?.server?.httpsCertPath,
 		},
@@ -97,14 +119,16 @@ async function resolveDevConfig(
 		},
 		origin: {
 			secure:
-				input.dev?.origin?.secure || config.dev.upstream_protocol === "https",
-			hostname: host ?? getInferredHost(routes),
+				input.dev?.origin?.secure ?? config.dev.upstream_protocol === "https",
+			hostname: host ?? getInferredHost(routes, config.configPath),
 		},
 		liveReload: input.dev?.liveReload || false,
 		testScheduled: input.dev?.testScheduled,
 		// absolute resolved path
 		persist: localPersistencePath,
 		registry: input.dev?.registry,
+		bindVectorizeToProd: input.dev?.bindVectorizeToProd ?? false,
+		multiworkerPrimary: input.dev?.multiworkerPrimary,
 	} satisfies StartDevWorkerOptions["dev"];
 }
 
@@ -137,10 +161,17 @@ async function resolveBindings(
 	const maskedVars = maskVars(bindings, config);
 
 	// now log all available bindings into the terminal
-	printBindings({
-		...bindings,
-		vars: maskedVars,
-	});
+	printBindings(
+		{
+			...bindings,
+			vars: maskedVars,
+		},
+		{
+			registry: input.dev?.registry,
+			local: !input.dev?.remote,
+			name: config.name,
+		}
+	);
 
 	return {
 		bindings: {
@@ -161,6 +192,7 @@ async function resolveTriggers(
 			routes: input.triggers?.filter(
 				(t): t is Extract<Trigger, { type: "route" }> => t.type === "route"
 			),
+			assets: input?.assets,
 		},
 		config
 	);
@@ -195,6 +227,14 @@ async function resolveConfig(
 	config: Config,
 	input: StartDevWorkerInput
 ): Promise<StartDevWorkerOptions> {
+	if (
+		config.pages_build_output_dir &&
+		input.dev?.multiworkerPrimary === false
+	) {
+		throw new UserError(
+			`You cannot use a Pages project as a service binding target.\nIf you are trying to develop Pages and Workers together, please use \`wrangler pages dev\`. Note the first config file specified must be for the Pages project`
+		);
+	}
 	const legacySite = unwrapHook(input.legacy?.site, config);
 
 	const legacyAssets = unwrapHook(input.legacy?.legacyAssets, config);
@@ -204,10 +244,10 @@ async function resolveConfig(
 			legacyAssets: Boolean(legacyAssets),
 			script: input.entrypoint,
 			moduleRoot: input.build?.moduleRoot,
-			// getEntry only needs to know if experimental_assets was specified.
+			// getEntry only needs to know if assets was specified.
 			// The actualy value is not relevant here, which is why not passing
-			// the entire ExperimentalAssets object is fine.
-			experimentalAssets: input?.experimental?.assets?.directory,
+			// the entire Assets object is fine.
+			assets: input?.assets,
 		},
 		config,
 		"dev"
@@ -217,17 +257,29 @@ async function resolveConfig(
 
 	const { bindings, unsafe } = await resolveBindings(config, input);
 
+	const assetsOptions = getAssetsOptions(
+		{
+			assets: input?.assets,
+			script: input.entrypoint,
+		},
+		config
+	);
+
 	const resolved = {
-		name: getScriptName({ name: input.name, env: input.env }, config),
+		name:
+			getScriptName({ name: input.name, env: input.env }, config) ?? "worker",
+		config: config.configPath,
 		compatibilityDate: getDevCompatibilityDate(config, input.compatibilityDate),
 		compatibilityFlags: input.compatibilityFlags ?? config.compatibility_flags,
 		entrypoint: entry.file,
-		directory: entry.directory,
+		projectRoot: entry.projectRoot,
 		bindings,
+		migrations: input.migrations ?? config.migrations,
 		sendMetrics: input.sendMetrics ?? config.send_metrics,
 		triggers: await resolveTriggers(config, input),
 		env: input.env,
 		build: {
+			alias: input.build?.alias ?? config.alias,
 			additionalModules: input.build?.additionalModules ?? [],
 			processEntrypoint: Boolean(input.build?.processEntrypoint),
 			bundle: input.build?.bundle ?? !config.no_bundle,
@@ -249,6 +301,7 @@ async function resolveConfig(
 			jsxFactory: input.build?.jsxFactory || config.jsx_factory,
 			jsxFragment: input.build?.jsxFragment || config.jsx_fragment,
 			tsconfig: input.build?.tsconfig ?? config.tsconfig,
+			exports: entry.exports,
 		},
 		dev: await resolveDevConfig(config, input),
 		legacy: {
@@ -261,19 +314,28 @@ async function resolveConfig(
 			capnp: input.unsafe?.capnp ?? unsafe?.capnp,
 			metadata: input.unsafe?.metadata ?? unsafe?.metadata,
 		},
-		experimental: {
-			assets: input?.experimental?.assets,
-		},
+		assets: assetsOptions,
 	} satisfies StartDevWorkerOptions;
 
 	if (resolved.legacy.legacyAssets && resolved.legacy.site) {
 		throw new UserError(
-			"Cannot use Assets and Workers Sites in the same Worker."
+			"Cannot use legacy assets and Workers Sites in the same Worker."
 		);
 	}
 
+	if (
+		extractBindingsOfType("browser", resolved.bindings).length &&
+		!resolved.dev.remote
+	) {
+		throw new UserError(
+			"Browser Rendering is not supported locally. Please use `wrangler dev --remote` instead."
+		);
+	}
+
+	validateAssetsArgsAndConfig(resolved);
+
 	const services = extractBindingsOfType("service", resolved.bindings);
-	if (services && services.length > 0) {
+	if (services && services.length > 0 && resolved.dev?.remote) {
 		logger.warn(
 			`This worker is bound to live services: ${services
 				.map(
@@ -301,10 +363,20 @@ async function resolveConfig(
 		(queues?.length ||
 			resolved.triggers?.some((t) => t.type === "queue-consumer"))
 	) {
-		logger.warn(
-			"Queues are currently in Beta and are not supported in wrangler dev remote mode."
-		);
+		logger.warn("Queues are not yet supported in wrangler dev remote mode.");
 	}
+
+	// TODO(do) support remote wrangler dev
+	const classNamesWhichUseSQLite = getClassNamesWhichUseSQLite(
+		resolved.migrations
+	);
+	if (
+		resolved.dev.remote &&
+		Array.from(classNamesWhichUseSQLite.values()).some((v) => v)
+	) {
+		logger.warn("SQLite in Durable Objects is only supported in local mode.");
+	}
+
 	return resolved;
 }
 export class ConfigController extends Controller<ConfigControllerEventMap> {
@@ -319,6 +391,7 @@ export class ConfigController extends Controller<ConfigControllerEventMap> {
 		if (configPath) {
 			this.#configWatcher = watch(configPath, {
 				persistent: true,
+				ignoreInitial: true,
 			}).on("change", async (_event) => {
 				logger.log(`${path.basename(configPath)} changed...`);
 				assert(
@@ -329,8 +402,9 @@ export class ConfigController extends Controller<ConfigControllerEventMap> {
 			});
 		}
 	}
-	public set(input: StartDevWorkerInput) {
-		return this.#updateConfig(input);
+
+	public set(input: StartDevWorkerInput, throwErrors = false) {
+		return this.#updateConfig(input, throwErrors);
 	}
 	public patch(input: Partial<StartDevWorkerInput>) {
 		assert(
@@ -346,39 +420,61 @@ export class ConfigController extends Controller<ConfigControllerEventMap> {
 		return this.#updateConfig(config);
 	}
 
-	async #updateConfig(input: StartDevWorkerInput) {
+	async #updateConfig(input: StartDevWorkerInput, throwErrors = false) {
 		this.#abortController?.abort();
 		this.#abortController = new AbortController();
 		const signal = this.#abortController.signal;
 		this.latestInput = input;
+		try {
+			const fileConfig = readConfig(
+				{
+					script: input.entrypoint,
+					config: input.config,
+					env: input.env,
+					"dispatch-namespace": undefined,
+					"legacy-env": !input.legacy?.enableServiceEnvironments,
+					remote: input.dev?.remote,
+					upstreamProtocol:
+						input.dev?.origin?.secure === undefined
+							? undefined
+							: input.dev?.origin?.secure
+								? "https"
+								: "http",
+					localProtocol:
+						input.dev?.server?.secure === undefined
+							? undefined
+							: input.dev?.server?.secure
+								? "https"
+								: "http",
+				},
+				{ useRedirectIfAvailable: true }
+			);
 
-		const fileConfig = readConfig(input.config, {
-			env: input.env,
-			"dispatch-namespace": undefined,
-			"legacy-env": !input.legacy?.enableServiceEnvironments ?? true,
-			remote: input.dev?.remote,
-			upstreamProtocol:
-				input.dev?.origin?.secure === undefined
-					? undefined
-					: input.dev?.origin?.secure
-						? "https"
-						: "http",
-			localProtocol:
-				input.dev?.server?.secure === undefined
-					? undefined
-					: input.dev?.server?.secure
-						? "https"
-						: "http",
-		});
-		void this.#ensureWatchingConfig(fileConfig.configPath);
+			if (typeof vitest === "undefined") {
+				void this.#ensureWatchingConfig(fileConfig.configPath);
+			}
 
-		const resolvedConfig = await resolveConfig(fileConfig, input);
-		if (signal.aborted) {
-			return;
+			const resolvedConfig = await resolveConfig(fileConfig, input);
+			if (signal.aborted) {
+				return;
+			}
+			this.latestConfig = resolvedConfig;
+			this.emitConfigUpdateEvent(resolvedConfig);
+
+			return this.latestConfig;
+		} catch (err) {
+			if (throwErrors) {
+				throw err;
+			} else {
+				this.emitErrorEvent({
+					type: "error",
+					reason: "Error resolving config",
+					cause: castErrorCause(err),
+					source: "ConfigController",
+					data: undefined,
+				});
+			}
 		}
-		this.latestConfig = resolvedConfig;
-		this.emitConfigUpdateEvent(resolvedConfig);
-		return this.latestConfig;
 	}
 
 	// ******************

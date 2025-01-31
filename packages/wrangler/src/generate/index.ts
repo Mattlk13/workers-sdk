@@ -1,10 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { UserError } from "../errors";
+import { execa } from "execa";
+import { getC3CommandFromEnv } from "../environment-variables/misc-variables";
+import { CommandLineArgsError, UserError } from "../errors";
 import { cloneIntoDirectory, initializeGit } from "../git-client";
-import { CommandLineArgsError, printWranglerBanner } from "../index";
 import { initHandler } from "../init";
 import { logger } from "../logger";
+import { getPackageManager } from "../package-manager";
+import * as shellquote from "../utils/shell-quote";
+import { printWranglerBanner } from "../wrangler-banner";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
@@ -36,7 +40,6 @@ export function generateOptions(yargs: CommonYargsArgv) {
 }
 type GenerateArgs = StrictYargsOptionsToInterface<typeof generateOptions>;
 
-// Originally, generate was a rust function: https://github.com/cloudflare/wrangler-legacy/blob/master/src/cli/mod.rs#L106-L123
 export async function generateHandler(args: GenerateArgs) {
 	// somehow, `init` marks name as required but then also runs fine
 	// with the name omitted, and then substitutes it at runtime with ""
@@ -54,8 +57,7 @@ export async function generateHandler(args: GenerateArgs) {
 			type: undefined,
 			_: args._,
 			$0: args.$0,
-			experimentalJsonConfig: false,
-			experimentalVersions: args.experimentalVersions,
+			experimentalProvision: args.experimentalProvision,
 		});
 	}
 
@@ -101,6 +103,27 @@ export async function generateHandler(args: GenerateArgs) {
 		throw new CommandLineArgsError(message);
 	}
 
+	if (isTemplateFolder(args.template)) {
+		logger.warn(
+			`Deprecation: \`wrangler generate\` is deprecated.\n` +
+				`Running \`npm create cloudflare@latest\` for you instead.\n`
+		);
+
+		const packageManager = await getPackageManager(process.cwd());
+
+		const c3Arguments = [
+			...shellquote.parse(getC3CommandFromEnv()),
+			...(packageManager.type === "npm" ? ["--"] : []),
+			args.name,
+			"--accept-defaults",
+			"--no-deploy",
+			"--no-open",
+		];
+
+		await execa(packageManager.type, c3Arguments, { stdio: "inherit" });
+		return;
+	}
+
 	logger.log(
 		`Creating a worker in ${path.basename(creationDirectory)} from ${
 			args.template
@@ -125,11 +148,11 @@ export async function generateHandler(args: GenerateArgs) {
  * - workers
  * |
  * | - worker
- * | | - wrangler.toml
+ * | | - wrangler.toml/wrangler.json
  * | | ...
  * |
  * | - worker-1
- * | | - wrangler.toml
+ * | | - wrangler.toml/wrangler.json
  * | | ...
  * ```
  *
@@ -275,14 +298,6 @@ function parseTemplatePath(templatePath: string): {
 	remote: string;
 	subdirectory?: string;
 } {
-	if (!templatePath.includes("/")) {
-		// template is a cloudflare canonical template, it doesn't include a slash in the name
-		return {
-			remote: "https://github.com/cloudflare/workers-sdk.git",
-			subdirectory: `templates/${templatePath}`,
-		};
-	}
-
 	const groups = TEMPLATE_REGEX.exec(templatePath)?.groups as unknown as
 		| TemplateRegexGroups
 		| undefined;
@@ -304,4 +319,8 @@ function parseTemplatePath(templatePath: string): {
 	const subdirectory = subdirectoryPath?.slice(1);
 
 	return { remote, subdirectory };
+}
+
+function isTemplateFolder(templatePath: string): boolean {
+	return !templatePath.includes("/");
 }

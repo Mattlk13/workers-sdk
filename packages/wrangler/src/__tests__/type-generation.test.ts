@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as TOML from "@iarna/toml";
 import {
-	constructType,
+	constructTSModuleGlob,
 	constructTypeKey,
 	generateImportSpecifier,
 	isValidIdentifier,
@@ -48,40 +48,19 @@ describe("constructTypeKey", () => {
 	});
 });
 
-describe("constructType", () => {
-	it("should return a valid type", () => {
-		expect(constructType("valid", "string")).toBe("valid: string;");
-		expect(constructType("valid123", "string")).toBe("valid123: string;");
-		expect(constructType("valid_123", "string")).toBe("valid_123: string;");
-		expect(constructType("valid_123_", "string")).toBe("valid_123_: string;");
-		expect(constructType("_valid_123_", "string")).toBe("_valid_123_: string;");
-		expect(constructType("_valid_123_", "string")).toBe("_valid_123_: string;");
-
-		expect(constructType("123invalid", "string")).toBe('"123invalid": string;');
-		expect(constructType("invalid-123", "string")).toBe(
-			'"invalid-123": string;'
-		);
-		expect(constructType("invalid 123", "string")).toBe(
-			'"invalid 123": string;'
-		);
-
-		expect(constructType("valid", 'a"', false)).toBe('valid: "a\\"";');
-		expect(constructType("valid", "a\\", false)).toBe('valid: "a\\\\";');
-		expect(constructType("valid", "a\\b", false)).toBe('valid: "a\\\\b";');
-		expect(constructType("valid", 'a\\b"', false)).toBe('valid: "a\\\\b\\"";');
-
-		expect(constructType("valid", 1)).toBe("valid: 1;");
-		expect(constructType("valid", 12345)).toBe("valid: 12345;");
-		expect(constructType("valid", true)).toBe("valid: true;");
-		expect(constructType("valid", false)).toBe("valid: false;");
-	});
-});
-
-describe("constructType with multiline strings", () => {
-	it("should correctly escape newlines in string values", () => {
-		const multilineString = "This is a\nmulti-line\nstring";
-		const expected = `valid: "This is a\\nmulti-line\\nstring";`;
-		expect(constructType("valid", multilineString, false)).toBe(expected);
+describe("constructTSModuleGlob() should return a valid TS glob ", () => {
+	it.each([
+		["**/*.wasm", "*.wasm"],
+		["**/*.txt", "*.txt"],
+		["**/foo", "*/foo"],
+		["**/*foo", "*foo"],
+		["file.foo", "file.foo"],
+		["folder/file.foo", "folder/file.foo"],
+		["folder/*", "folder/*"],
+		["folder/**", "folder/*"],
+		["folder/**/*", "folder/*"],
+	])("$1 -> $2", (from, to) => {
+		expect(constructTSModuleGlob(from)).toBe(to);
 	});
 });
 
@@ -147,6 +126,8 @@ const bindingsConfigMock: Omit<
 			},
 		],
 	},
+	workflows: [],
+	containers: { app: [] },
 	r2_buckets: [
 		{
 			binding: "R2_BUCKET_BINDING",
@@ -198,7 +179,10 @@ const bindingsConfigMock: Omit<
 	},
 	wasm_modules: { MODULE1: "module1.wasm", MODULE2: "module2.wasm" },
 	unsafe: {
-		bindings: [{ name: "testing_unsafe", type: "plain_text" }],
+		bindings: [
+			{ name: "testing_unsafe", type: "plain_text" },
+			{ name: "UNSAFE_RATELIMIT", type: "ratelimit" },
+		],
 		metadata: { some_key: "some_value" },
 	},
 	rules: [
@@ -214,6 +198,11 @@ const bindingsConfigMock: Omit<
 		},
 		{ type: "CompiledWasm", globs: ["**/*.wasm"], fallthrough: true },
 	],
+	pipelines: [],
+	assets: {
+		binding: "ASSETS_BINDING",
+		directory: "/assets",
+	},
 };
 
 describe("generateTypes()", () => {
@@ -229,13 +218,12 @@ describe("generateTypes()", () => {
 	`);
 	});
 
-	it("should show a warning when no custom config file is detected", async () => {
-		await runWrangler("types -c hello.toml");
-		expect(std.warn).toMatchInlineSnapshot(`
-		"[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mNo config file detected (at hello.toml), aborting[0m
-
-		"
-	`);
+	it("should error when a specified custom config file is missing", async () => {
+		await expect(() =>
+			runWrangler("types -c hello.toml")
+		).rejects.toMatchInlineSnapshot(
+			`[ParseError: Could not read file: hello.toml]`
+		);
 	});
 
 	it("should respect the top level -c|--config flag", async () => {
@@ -342,6 +330,7 @@ describe("generateTypes()", () => {
 			SOME_TEXT_BLOB1: string;
 			SOME_TEXT_BLOB2: string;
 			testing_unsafe: any;
+			UNSAFE_RATELIMIT: RateLimit;
 			TEST_QUEUE_BINDING: Queue;
 			SEND_EMAIL_BINDING: SendEmail;
 			VECTORIZE_BINDING: VectorizeIndex;
@@ -350,6 +339,7 @@ describe("generateTypes()", () => {
 			BROWSER_BINDING: Fetcher;
 			AI_BINDING: Ai;
 			VERSION_METADATA_BINDING: { id: string; tag: string };
+			ASSETS_BINDING: Fetcher;
 		}
 		declare module \\"*.txt\\" {
 			const value: string;
@@ -417,8 +407,9 @@ describe("generateTypes()", () => {
 			);
 
 			await runWrangler("types");
-			expect(fs.readFileSync("./worker-configuration.d.ts", "utf-8")).toMatch(
-				/interface Env \{\s*\}/
+
+			expect(fs.readFileSync("./worker-configuration.d.ts", "utf-8")).toContain(
+				`// eslint-disable-next-line @typescript-eslint/no-empty-interface,@typescript-eslint/no-empty-object-type\ninterface Env {\n}`
 			);
 			expect(std.out).toMatchInlineSnapshot(`
 			"Generating project types...
@@ -482,6 +473,7 @@ describe("generateTypes()", () => {
 		export {};
 		declare global {
 			const testing_unsafe: any;
+			const UNSAFE_RATELIMIT: RateLimit;
 		}
 		"
 	`);
@@ -495,6 +487,31 @@ describe("generateTypes()", () => {
 			} as unknown as TOML.JsonMap),
 			"utf-8"
 		);
+
+		await runWrangler("types");
+		expect(std.out).toMatchInlineSnapshot(`
+		"Generating project types...
+
+		interface Env {
+			SOMETHING: \\"asdasdfasdf\\";
+			ANOTHER: \\"thing\\";
+			\\"some-other-var\\": \\"some-other-value\\";
+			OBJECT_VAR: {\\"enterprise\\":\\"1701-D\\",\\"activeDuty\\":true,\\"captian\\":\\"Picard\\"};
+		}
+		"
+	`);
+	});
+
+	it("should not error if expected entrypoint is not found and assume module worker", async () => {
+		fs.writeFileSync(
+			"./wrangler.toml",
+			TOML.stringify({
+				main: "index.ts",
+				vars: bindingsConfigMock.vars,
+			} as unknown as TOML.JsonMap),
+			"utf-8"
+		);
+		expect(fs.existsSync("index.ts")).toEqual(false);
 
 		await runWrangler("types");
 		expect(std.out).toMatchInlineSnapshot(`
@@ -547,6 +564,35 @@ describe("generateTypes()", () => {
 	`);
 	});
 
+	it("should allow opting out of strict-vars", async () => {
+		fs.writeFileSync(
+			"./wrangler.toml",
+			TOML.stringify({
+				vars: {
+					varStr: "A from wrangler toml",
+					varArrNum: [1, 2, 3],
+					varArrMix: [1, "two", 3, true],
+					varObj: { test: true },
+				},
+			} as TOML.JsonMap),
+			"utf-8"
+		);
+
+		await runWrangler("types --strict-vars=false");
+
+		expect(std.out).toMatchInlineSnapshot(`
+		"Generating project types...
+
+		interface Env {
+			varStr: string;
+			varArrNum: number[];
+			varArrMix: (boolean|number|string)[];
+			varObj: object;
+		}
+		"
+	`);
+	});
+
 	it("should override vars with secrets", async () => {
 		fs.writeFileSync(
 			"./wrangler.toml",
@@ -577,6 +623,110 @@ describe("generateTypes()", () => {
 		}
 		"
 	`);
+	});
+
+	it("various different types of vars", async () => {
+		fs.writeFileSync(
+			"./wrangler.toml",
+			TOML.stringify({
+				vars: {
+					"var-a": '"a\\""',
+					"var-a-1": '"a\\\\"',
+					"var-a-b": '"a\\\\b"',
+					"var-a-b-": '"a\\\\b\\""',
+					1: 1,
+					12345: 12345,
+					true: true,
+					false: false,
+					"multi\nline\nvar": "this\nis\na\nmulti\nline\nvariable!",
+				},
+			} as TOML.JsonMap),
+			"utf-8"
+		);
+		await runWrangler("types");
+
+		expect(std.out).toMatchInlineSnapshot(`
+			"Generating project types...
+
+			interface Env {
+				\\"1\\": 1;
+				\\"12345\\": 12345;
+				\\"var-a\\": \\"/\\"a///\\"/\\"\\";
+				\\"var-a-1\\": \\"/\\"a/////\\"\\";
+				\\"var-a-b\\": \\"/\\"a////b/\\"\\";
+				\\"var-a-b-\\": \\"/\\"a////b///\\"/\\"\\";
+				true: true;
+				false: false;
+				\\"multi
+			line
+			var\\": \\"this/nis/na/nmulti/nline/nvariable!\\";
+			}
+			"
+		`);
+	});
+
+	describe("vars present in multiple environments", () => {
+		beforeEach(() => {
+			fs.writeFileSync(
+				"./wrangler.toml",
+				TOML.stringify({
+					vars: {
+						MY_VAR: "a var",
+						MY_VAR_A: "A (dev)",
+						MY_VAR_B: { value: "B (dev)" },
+						MY_VAR_C: ["a", "b", "c"],
+					},
+					env: {
+						production: {
+							vars: {
+								MY_VAR: "a var",
+								MY_VAR_A: "A (prod)",
+								MY_VAR_B: { value: "B (prod)" },
+								MY_VAR_C: [1, 2, 3],
+							},
+						},
+						staging: {
+							vars: {
+								MY_VAR_A: "A (stag)",
+							},
+						},
+					},
+				} as TOML.JsonMap),
+				"utf-8"
+			);
+		});
+
+		it("should produce string and union types for variables (default)", async () => {
+			await runWrangler("types");
+
+			expect(std.out).toMatchInlineSnapshot(`
+			"Generating project types...
+
+			interface Env {
+				MY_VAR: \\"a var\\";
+				MY_VAR_A: \\"A (dev)\\" | \\"A (prod)\\" | \\"A (stag)\\";
+				MY_VAR_C: [\\"a\\",\\"b\\",\\"c\\"] | [1,2,3];
+				MY_VAR_B: {\\"value\\":\\"B (dev)\\"} | {\\"value\\":\\"B (prod)\\"};
+			}
+			"
+		`);
+		});
+
+		it("should produce non-strict types for variables (with --strict-vars=false)", async () => {
+			await runWrangler("types --strict-vars=false");
+
+			expect(std.out).toMatchInlineSnapshot(`
+			"Generating project types...
+
+			interface Env {
+				MY_VAR: string;
+				MY_VAR_A: string;
+				MY_VAR_C: string[] | number[];
+				MY_VAR_B: object;
+			}
+			"
+		`);
+		});
 	});
 
 	describe("customization", () => {
@@ -713,7 +863,7 @@ describe("generateTypes()", () => {
 			});
 		});
 
-		it("should allow multiple customization to be applied together", async () => {
+		it("should allow multiple customizations to be applied together", async () => {
 			fs.writeFileSync(
 				"./wrangler.toml",
 				TOML.stringify({

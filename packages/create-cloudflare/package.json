@@ -1,6 +1,6 @@
 {
 	"name": "create-cloudflare",
-	"version": "2.23.0",
+	"version": "2.37.4",
 	"description": "A CLI for creating and deploying new applications to Cloudflare.",
 	"keywords": [
 		"cloudflare",
@@ -23,14 +23,15 @@
 	"bin": "./dist/cli.js",
 	"files": [
 		"dist",
-		"templates"
+		"templates",
+		"templates-experimental"
 	],
 	"scripts": {
 		"build": "node -r esbuild-register scripts/build.ts",
 		"dev:codemod": "node -r esbuild-register scripts/codemodDev.ts",
 		"check:lint": "eslint . --max-warnings=0",
 		"check:type": "tsc",
-		"prepublishOnly": "pnpm -w run build",
+		"prepublishOnly": "pnpm exec turbo build -F create-cloudflare",
 		"test:e2e": "vitest run --config ./vitest-e2e.config.mts",
 		"test:e2e:npm": "pnpm run build && cross-env TEST_PM=npm vitest run --config ./vitest-e2e.config.mts",
 		"test:e2e:pnpm": "pnpm run build && cross-env TEST_PM=pnpm vitest run --config ./vitest-e2e.config.mts",
@@ -38,7 +39,7 @@
 		"test:e2e:yarn": "pnpm run build && cross-env TEST_PM=yarn vitest run --config ./vitest-e2e.config.mts",
 		"test:unit": "vitest run --config ./vitest.config.mts",
 		"test:unit:watch": "vitest --config ./vitest.config.mts",
-		"watch": "node -r esbuild-register scripts/build.ts --watch",
+		"dev": "node -r esbuild-register scripts/build.ts --watch",
 		"test:ci": "vitest run --config ./vitest.config.mts"
 	},
 	"devDependencies": {
@@ -48,7 +49,7 @@
 		"@cloudflare/cli": "workspace:*",
 		"@cloudflare/eslint-config-worker": "workspace:*",
 		"@cloudflare/workers-tsconfig": "workspace:*",
-		"@cloudflare/workers-types": "^4.20240806.0",
+		"@cloudflare/workers-types": "^4.20250129.0",
 		"@iarna/toml": "^3.0.0",
 		"@types/command-exists": "^1.2.0",
 		"@types/cross-spawn": "^6.0.2",
@@ -56,7 +57,7 @@
 		"@types/degit": "^2.8.6",
 		"@types/dns2": "^2.0.3",
 		"@types/esprima": "^4.0.3",
-		"@types/node": "20.8.3",
+		"@types/node": "catalog:default",
 		"@types/semver": "^7.5.1",
 		"@types/which-pm-runs": "^1.0.0",
 		"@types/yargs": "^17.0.22",
@@ -78,18 +79,23 @@
 		"open": "^8.4.0",
 		"recast": "^0.22.0",
 		"semver": "^7.5.1",
-		"undici": "^5.28.4",
+		"typescript": "catalog:default",
+		"undici": "catalog:default",
+		"vite": "catalog:default",
 		"vite-tsconfig-paths": "^4.0.8",
+		"vitest": "catalog:default",
 		"which-pm-runs": "^1.1.0",
 		"wrangler": "workspace:*",
 		"wrap-ansi": "^9.0.0",
+		"xdg-app-paths": "^8.3.0",
 		"yargs": "^17.7.2"
 	},
 	"engines": {
 		"node": ">=18.14.1"
 	},
 	"workers-sdk": {
-		"prerelease": true
+		"prerelease": true,
+		"type": "cli"
 	},
 	"volta": {
 		"extends": "../../package.json"

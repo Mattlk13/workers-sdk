@@ -14,9 +14,11 @@
 	},
 	"devDependencies": {
 		"@cloudflare/workers-tsconfig": "workspace:*",
-		"@cloudflare/workers-types": "^4.20240806.0",
-		"@types/node": "20.8.3",
+		"@cloudflare/workers-types": "^4.20250129.0",
+		"@types/node": "catalog:default",
 		"buffer": "^6.0.3",
+		"typescript": "catalog:default",
+		"vitest": "catalog:default",
 		"wrangler": "workspace:*"
 	},
 	"volta": {

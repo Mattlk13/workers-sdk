@@ -1,4 +1,3 @@
-import { cwd } from "process";
 import { http, HttpResponse } from "msw";
 import { reinitialiseAuthTokens } from "../../user";
 import { mockAccountId, mockApiToken } from "../helpers/mock-account-id";
@@ -10,7 +9,7 @@ import { mockSetTimeout } from "../helpers/mock-set-timeout";
 import { msw } from "../helpers/msw";
 import { runInTempDir } from "../helpers/run-in-tmp";
 import { runWrangler } from "../helpers/run-wrangler";
-import { writeWranglerToml } from "../helpers/write-wrangler-toml";
+import { writeWranglerConfig } from "../helpers/write-wrangler-config";
 
 describe("migrate", () => {
 	runInTempDir();
@@ -22,7 +21,7 @@ describe("migrate", () => {
 	describe("create", () => {
 		it("should reject the --local flag for create", async () => {
 			setIsTTY(false);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 				],
@@ -39,7 +38,7 @@ describe("migrate", () => {
 		mockApiToken();
 		it("should not attempt to login in local mode", async () => {
 			setIsTTY(false);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 				],
@@ -47,35 +46,31 @@ describe("migrate", () => {
 			// If we get to the point where we are checking for migrations then we have not been asked to log in.
 			await expect(
 				runWrangler("d1 migrations apply DATABASE")
-			).rejects.toThrowError(
-				`No migrations present at ${cwd().replaceAll("\\", "/")}/migrations.`
-			);
+			).rejects.toThrowError(`No migrations present at <cwd>/migrations.`);
 		});
 
 		it("should try to read D1 config from wrangler.toml", async () => {
 			setIsTTY(false);
-			writeWranglerToml();
+			writeWranglerConfig();
 			await expect(
 				runWrangler("d1 migrations apply DATABASE --remote")
 			).rejects.toThrowError(
-				"Couldn't find a D1 DB with the name or binding 'DATABASE' in wrangler.toml."
+				"Couldn't find a D1 DB with the name or binding 'DATABASE' in your wrangler.toml file."
 			);
 		});
 
 		it("should not try to read wrangler.toml in local mode", async () => {
 			setIsTTY(false);
-			writeWranglerToml();
+			writeWranglerConfig();
 			// If we get to the point where we are checking for migrations then we have not checked wrangler.toml.
 			await expect(
 				runWrangler("d1 migrations apply DATABASE")
-			).rejects.toThrowError(
-				`No migrations present at ${cwd().replaceAll("\\", "/")}/migrations.`
-			);
+			).rejects.toThrowError(`No migrations present at <cwd>/migrations.`);
 		});
 
 		it("should reject the use of --preview with --local", async () => {
 			setIsTTY(false);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 				],
@@ -90,7 +85,7 @@ describe("migrate", () => {
 		it("multiple accounts: should throw when trying to apply migrations without an account_id in config", async () => {
 			setIsTTY(false);
 
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{
 						binding: "DATABASE",
@@ -172,7 +167,7 @@ Your database may not be available to serve requests during the migration, conti
 					}
 				)
 			);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{
 						binding: "DATABASE",
@@ -213,7 +208,7 @@ Your database may not be available to serve requests during the migration, conti
 
 		it("should not attempt to login in local mode", async () => {
 			setIsTTY(false);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 				],
@@ -221,14 +216,12 @@ Your database may not be available to serve requests during the migration, conti
 			// If we get to the point where we are checking for migrations then we have not been asked to log in.
 			await expect(
 				runWrangler("d1 migrations list --local DATABASE")
-			).rejects.toThrowError(
-				`No migrations present at ${cwd().replaceAll("\\", "/")}/migrations.`
-			);
+			).rejects.toThrowError(`No migrations present at <cwd>/migrations.`);
 		});
 
 		it("should use the custom migrations folder when provided", async () => {
 			setIsTTY(false);
-			writeWranglerToml({
+			writeWranglerConfig({
 				d1_databases: [
 					{
 						binding: "DATABASE",
@@ -241,23 +234,19 @@ Your database may not be available to serve requests during the migration, conti
 			await expect(
 				runWrangler("d1 migrations list --local DATABASE")
 			).rejects.toThrowError(
-				`No migrations present at ${cwd().replaceAll(
-					"\\",
-					"/"
-				)}/my-migrations-go-here.`
+				`No migrations present at <cwd>/my-migrations-go-here.`
 			);
 		});
 
 		it("should try to read D1 config from wrangler.toml when logged in", async () => {
-			// no need to clear this env var as it's implicitly cleared by mockApiToken in afterEach
-			process.env.CLOUDFLARE_API_TOKEN = "api-token";
+			vi.stubEnv("CLOUDFLARE_API_TOKEN", "api-token");
 			reinitialiseAuthTokens();
 			setIsTTY(false);
-			writeWranglerToml();
+			writeWranglerConfig();
 			await expect(
 				runWrangler("d1 migrations list DATABASE --remote")
 			).rejects.toThrowError(
-				"Couldn't find a D1 DB with the name or binding 'DATABASE' in wrangler.toml."
+				"Couldn't find a D1 DB with the name or binding 'DATABASE' in your wrangler.toml file."
 			);
 		});
 
@@ -273,13 +262,11 @@ Your database may not be available to serve requests during the migration, conti
 
 		it("should not try to read wrangler.toml in local mode", async () => {
 			setIsTTY(false);
-			writeWranglerToml();
+			writeWranglerConfig();
 			// If we get to the point where we are checking for migrations then we have not checked wrangler.toml.
 			await expect(
 				runWrangler("d1 migrations list DATABASE")
-			).rejects.toThrowError(
-				`No migrations present at ${cwd().replaceAll("\\", "/")}/migrations.`
-			);
+			).rejects.toThrowError(`No migrations present at <cwd>/migrations.`);
 		});
 	});
 });

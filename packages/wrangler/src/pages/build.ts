@@ -8,9 +8,11 @@ import path, {
 	resolve as resolvePath,
 } from "node:path";
 import { createUploadWorkerBundleContents } from "../api/pages/create-worker-bundle-contents";
-import { readConfig } from "../config";
+import { readPagesConfig } from "../config";
+import { findWranglerConfig } from "../config/config-helpers";
+import { shouldCheckFetch } from "../deployment-bundle/bundle";
 import { writeAdditionalModules } from "../deployment-bundle/find-additional-modules";
-import { validateNodeCompat } from "../deployment-bundle/node-compat";
+import { validateNodeCompatMode } from "../deployment-bundle/node-compat";
 import { FatalError } from "../errors";
 import { logger } from "../logger";
 import * as metrics from "../metrics";
@@ -29,11 +31,11 @@ import {
 } from "./functions/buildWorker";
 import type { Config } from "../config";
 import type { BundleResult } from "../deployment-bundle/bundle";
-import type { NodeJSCompatMode } from "../deployment-bundle/node-compat";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
 } from "../yargs-types";
+import type { NodeJSCompatMode } from "miniflare";
 
 export type PagesBuildArgs = StrictYargsOptionsToInterface<typeof Options>;
 
@@ -152,6 +154,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 			plugin,
 			nodejsCompatMode,
 			defineNavigatorUserAgent,
+			checkFetch,
 			external,
 		} = validatedArgs;
 
@@ -178,6 +181,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 				routesOutputPath,
 				local: false,
 				defineNavigatorUserAgent,
+				checkFetch,
 				external,
 			});
 		} catch (e) {
@@ -219,6 +223,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 			nodejsCompatMode,
 			workerScriptPath,
 			defineNavigatorUserAgent,
+			checkFetch,
 			external,
 		} = validatedArgs;
 
@@ -234,6 +239,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 					buildOutputDirectory,
 					nodejsCompatMode,
 					defineNavigatorUserAgent,
+					checkFetch,
 					sourceMaps: config?.upload_source_maps ?? sourcemap,
 				});
 			} else {
@@ -252,6 +258,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 					watch,
 					nodejsCompatMode,
 					defineNavigatorUserAgent,
+					checkFetch,
 					externalModules: external,
 				});
 			}
@@ -277,6 +284,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 					routesOutputPath,
 					local: false,
 					defineNavigatorUserAgent,
+					checkFetch,
 					external,
 				});
 			} catch (e) {
@@ -312,7 +320,7 @@ export const Handler = async (args: PagesBuildArgs) => {
 		}
 	}
 
-	await metrics.sendMetricsEvent("build pages functions");
+	metrics.sendMetricsEvent("build pages functions");
 };
 
 type WorkerBundleArgs = Omit<PagesBuildArgs, "nodeCompat"> & {
@@ -320,6 +328,7 @@ type WorkerBundleArgs = Omit<PagesBuildArgs, "nodeCompat"> & {
 	buildOutputDirectory: string;
 	nodejsCompatMode: NodeJSCompatMode;
 	defineNavigatorUserAgent: boolean;
+	checkFetch: boolean;
 	workerScriptPath: string;
 	config: Config | undefined;
 	buildMetadata:
@@ -337,6 +346,7 @@ type PluginArgs = Omit<
 	outdir: string;
 	nodejsCompatMode: NodeJSCompatMode;
 	defineNavigatorUserAgent: boolean;
+	checkFetch: boolean;
 };
 async function maybeReadPagesConfig(
 	args: PagesBuildArgs
@@ -344,21 +354,20 @@ async function maybeReadPagesConfig(
 	if (!args.projectDirectory || !args.buildMetadataPath) {
 		return;
 	}
-	const configPath = path.resolve(args.projectDirectory, "wrangler.toml");
+	const { configPath } = findWranglerConfig(args.projectDirectory, {
+		useRedirectIfAvailable: true,
+	});
 	// Fail early if the config file doesn't exist
-	if (!existsSync(configPath)) {
+	if (!configPath || !existsSync(configPath)) {
 		return undefined;
 	}
 	try {
-		const config = readConfig(
-			configPath,
-			{
-				...args,
-				// eslint-disable-next-line turbo/no-undeclared-env-vars
-				env: process.env.PAGES_ENVIRONMENT,
-			},
-			true
-		);
+		const config = readPagesConfig({
+			...args,
+			config: configPath,
+			// eslint-disable-next-line turbo/no-undeclared-env-vars
+			env: process.env.PAGES_ENVIRONMENT,
+		});
 
 		return {
 			...config,
@@ -437,14 +446,22 @@ const validateArgs = async (args: PagesBuildArgs): Promise<ValidatedArgs> => {
 		args.outfile = resolvePath(args.outfile);
 	}
 
-	const { nodeCompat: legacyNodeCompat, ...argsExceptNodeCompat } = args;
-	const nodejsCompatMode = validateNodeCompat({
-		legacyNodeCompat: legacyNodeCompat,
-		compatibilityFlags: args.compatibilityFlags ?? [],
-		noBundle: config?.no_bundle ?? false,
-	});
+	const { nodeCompat: node_compat, ...argsExceptNodeCompat } = args;
+	const nodejsCompatMode = validateNodeCompatMode(
+		args.compatibilityDate ?? config?.compatibility_date,
+		args.compatibilityFlags ?? config?.compatibility_flags ?? [],
+		{
+			nodeCompat: node_compat,
+			noBundle: config?.no_bundle,
+		}
+	);
 
 	const defineNavigatorUserAgent = isNavigatorDefined(
+		args.compatibilityDate,
+		args.compatibilityFlags
+	);
+
+	const checkFetch = shouldCheckFetch(
 		args.compatibilityDate,
 		args.compatibilityFlags
 	);
@@ -490,6 +507,7 @@ We looked for the Functions directory (${basename(
 		workerScriptPath,
 		nodejsCompatMode,
 		defineNavigatorUserAgent,
+		checkFetch,
 		config,
 		buildMetadata:
 			config && args.projectDirectory && config.pages_build_output_dir

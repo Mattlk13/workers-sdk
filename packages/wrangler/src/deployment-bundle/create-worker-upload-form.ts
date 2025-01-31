@@ -2,7 +2,10 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { File, FormData } from "undici";
+import { UserError } from "../errors";
+import { INHERIT_SYMBOL } from "./bindings";
 import { handleUnsafeCapnp } from "./capnp";
+import type { Observability } from "../config/environment";
 import type {
 	CfDurableObjectMigrations,
 	CfModuleType,
@@ -11,6 +14,7 @@ import type {
 	CfUserLimits,
 	CfWorkerInit,
 } from "./worker.js";
+import type { AssetConfig } from "@cloudflare/workers-shared";
 import type { Json } from "miniflare";
 
 const moduleTypeMimeType: { [type in CfModuleType]: string | undefined } = {
@@ -24,7 +28,7 @@ const moduleTypeMimeType: { [type in CfModuleType]: string | undefined } = {
 	"nodejs-compat-module": undefined,
 };
 
-export function toMimeType(type: CfModuleType): string {
+function toMimeType(type: CfModuleType): string {
 	const mimeType = moduleTypeMimeType[type];
 	if (mimeType === undefined) {
 		throw new TypeError("Unsupported module: " + type);
@@ -74,6 +78,13 @@ export type WorkerMetadataBinding =
 			script_name?: string;
 			environment?: string;
 	  }
+	| {
+			type: "workflow";
+			name: string;
+			workflow_name: string;
+			class_name: string;
+			script_name?: string;
+	  }
 	| { type: "queue"; name: string; queue_name: string; delivery_delay?: number }
 	| {
 			type: "r2_bucket";
@@ -110,14 +121,16 @@ export type WorkerMetadataBinding =
 			};
 	  }
 	| { type: "mtls_certificate"; name: string; certificate_id: string }
+	| { type: "pipelines"; name: string; pipeline: string }
 	| {
 			type: "logfwdr";
 			name: string;
 			destination: string;
-	  };
+	  }
+	| { type: "assets"; name: string };
 
 // for PUT /accounts/:accountId/workers/scripts/:scriptName
-export type WorkerMetadataPut = {
+type WorkerMetadataPut = {
 	/** The name of the entry point module. Only exists when the worker is in the ES module format */
 	main_module?: string;
 	/** The name of the entry point module. Only exists when the worker is in the service-worker format */
@@ -137,14 +150,18 @@ export type WorkerMetadataPut = {
 	placement?: CfPlacement;
 	tail_consumers?: CfTailConsumer[];
 	limits?: CfUserLimits;
-	// experimental assets (EWC will expect 'assets')
-	assets?: string;
+
+	assets?: {
+		jwt: string;
+		config?: AssetConfig;
+	};
+	observability?: Observability | undefined;
 	// Allow unsafe.metadata to add arbitrary properties at runtime
 	[key: string]: unknown;
 };
 
 // for POST /accounts/:accountId/workers/:workerName/versions
-export type WorkerMetadataVersionsPost = WorkerMetadataPut & {
+type WorkerMetadataVersionsPost = WorkerMetadataPut & {
 	annotations?: Record<string, string>;
 };
 
@@ -171,14 +188,36 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 		tail_consumers,
 		limits,
 		annotations,
-		experimental_assets,
+		keep_assets,
+		assets,
+		observability,
 	} = worker;
 
+	let runWorkerFirst = undefined;
+	if (assets?.assetConfig?.run_worker_first !== undefined) {
+		runWorkerFirst = assets.assetConfig?.run_worker_first;
+	} else if (assets?.assetConfig?.serve_directly !== undefined) {
+		runWorkerFirst = !assets?.assetConfig?.serve_directly;
+	}
+
+	const assetConfig = {
+		html_handling: assets?.assetConfig?.html_handling,
+		not_found_handling: assets?.assetConfig?.not_found_handling,
+		run_worker_first: runWorkerFirst,
+	};
+
 	// short circuit if static assets upload only
-	if (experimental_assets?.staticAssetsOnly) {
+	if (assets && !assets.routingConfig.has_user_worker) {
 		formData.set(
 			"metadata",
-			JSON.stringify({ assets: experimental_assets.jwt })
+			JSON.stringify({
+				assets: {
+					jwt: assets.jwt,
+					config: assetConfig,
+				},
+				...(compatibility_date && { compatibility_date }),
+				...(compatibility_flags && { compatibility_flags }),
+			})
 		);
 		return formData;
 	}
@@ -195,11 +234,22 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 	});
 
 	bindings.kv_namespaces?.forEach(({ id, binding }) => {
-		metadataBindings.push({
-			name: binding,
-			type: "kv_namespace",
-			namespace_id: id,
-		});
+		if (id === undefined) {
+			throw new UserError(`${binding} bindings must have an "id" field`);
+		}
+
+		if (id === INHERIT_SYMBOL) {
+			metadataBindings.push({
+				name: binding,
+				type: "inherit",
+			});
+		} else {
+			metadataBindings.push({
+				name: binding,
+				type: "kv_namespace",
+				namespace_id: id,
+			});
+		}
 	});
 
 	bindings.send_email?.forEach(
@@ -225,6 +275,16 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 		}
 	);
 
+	bindings.workflows?.forEach(({ binding, name, class_name, script_name }) => {
+		metadataBindings.push({
+			type: "workflow",
+			name: binding,
+			workflow_name: name,
+			class_name,
+			...(script_name && { script_name }),
+		});
+	});
+
 	bindings.queues?.forEach(({ binding, queue_name, delivery_delay }) => {
 		metadataBindings.push({
 			type: "queue",
@@ -235,22 +295,48 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 	});
 
 	bindings.r2_buckets?.forEach(({ binding, bucket_name, jurisdiction }) => {
-		metadataBindings.push({
-			name: binding,
-			type: "r2_bucket",
-			bucket_name,
-			jurisdiction,
-		});
+		if (bucket_name === undefined) {
+			throw new UserError(
+				`${binding} bindings must have a "bucket_name" field`
+			);
+		}
+
+		if (bucket_name === INHERIT_SYMBOL) {
+			metadataBindings.push({
+				name: binding,
+				type: "inherit",
+			});
+		} else {
+			metadataBindings.push({
+				name: binding,
+				type: "r2_bucket",
+				bucket_name,
+				jurisdiction,
+			});
+		}
 	});
 
 	bindings.d1_databases?.forEach(
 		({ binding, database_id, database_internal_env }) => {
-			metadataBindings.push({
-				name: binding,
-				type: "d1",
-				id: database_id,
-				internalEnv: database_internal_env,
-			});
+			if (database_id === undefined) {
+				throw new UserError(
+					`${binding} bindings must have a "database_id" field`
+				);
+			}
+
+			if (database_id === INHERIT_SYMBOL) {
+				metadataBindings.push({
+					name: binding,
+					type: "inherit",
+				});
+			} else {
+				metadataBindings.push({
+					name: binding,
+					type: "d1",
+					id: database_id,
+					internalEnv: database_internal_env,
+				});
+			}
 		}
 	);
 
@@ -315,6 +401,14 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 		});
 	});
 
+	bindings.pipelines?.forEach(({ binding, pipeline }) => {
+		metadataBindings.push({
+			name: binding,
+			type: "pipelines",
+			pipeline: pipeline,
+		});
+	});
+
 	bindings.logfwdr?.bindings.forEach(({ name, destination }) => {
 		metadataBindings.push({
 			name: name,
@@ -361,6 +455,13 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 		metadataBindings.push({
 			name: bindings.version_metadata.binding,
 			type: "version_metadata",
+		});
+	}
+
+	if (bindings.assets !== undefined) {
+		metadataBindings.push({
+			name: bindings.assets.binding,
+			type: "assets",
 		});
 	}
 
@@ -537,7 +638,9 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 			: { body_part: main.name }),
 		bindings: metadataBindings,
 		...(compatibility_date && { compatibility_date }),
-		...(compatibility_flags && { compatibility_flags }),
+		...(compatibility_flags && {
+			compatibility_flags,
+		}),
 		...(migrations && { migrations }),
 		capnp_schema: capnpSchemaOutputFile,
 		...(keep_bindings && { keep_bindings }),
@@ -546,6 +649,14 @@ export function createWorkerUploadForm(worker: CfWorkerInit): FormData {
 		...(tail_consumers && { tail_consumers }),
 		...(limits && { limits }),
 		...(annotations && { annotations }),
+		...(keep_assets !== undefined && { keep_assets }),
+		...(assets && {
+			assets: {
+				jwt: assets.jwt,
+				config: assetConfig,
+			},
+		}),
+		...(observability && { observability }),
 	};
 
 	if (bindings.unsafe?.metadata !== undefined) {

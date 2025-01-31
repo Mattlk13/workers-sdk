@@ -12,6 +12,8 @@ type VariableNames =
 	| "WRANGLER_C3_COMMAND"
 	| "WRANGLER_CF_AUTHORIZATION_TOKEN"
 	| "WRANGLER_CLIENT_ID"
+	| "WRANGLER_HTTPS_KEY_PATH"
+	| "WRANGLER_HTTPS_CERT_PATH"
 	| "WRANGLER_LOG"
 	| "WRANGLER_LOG_PATH"
 	| "WRANGLER_LOG_SANITIZE"
@@ -19,7 +21,12 @@ type VariableNames =
 	| "WRANGLER_SEND_METRICS"
 	| "WRANGLER_TOKEN_URL"
 	| "WRANGLER_OUTPUT_FILE_DIRECTORY"
-	| "WRANGLER_OUTPUT_FILE_PATH";
+	| "WRANGLER_OUTPUT_FILE_PATH"
+	| "WRANGLER_CI_MATCH_TAG"
+	| "WRANGLER_BUILD_CONDITIONS"
+	| "WRANGLER_BUILD_PLATFORM"
+	| "WRANGLER_UNENV_RESOLVE_PATHS"
+	| "WRANGLER_REGISTRY_PATH";
 
 type DeprecatedNames =
 	| "CF_ACCOUNT_ID"
@@ -73,9 +80,9 @@ export function getEnvironmentVariableFactory({
 }): () => string | undefined {
 	let hasWarned = false;
 	return () => {
-		if (process.env[variableName]) {
+		if (variableName in process.env) {
 			return process.env[variableName];
-		} else if (deprecatedName && process.env[deprecatedName]) {
+		} else if (deprecatedName && deprecatedName in process.env) {
 			if (!hasWarned) {
 				// Only show the warning once.
 				hasWarned = true;

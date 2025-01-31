@@ -30,6 +30,8 @@ import type {
 } from "./events";
 import type { Trigger } from "./types";
 
+type CreateRemoteWorkerInitProps = Parameters<typeof createRemoteWorkerInit>[0];
+
 export class RemoteRuntimeController extends RuntimeController {
 	#abortController = new AbortController();
 
@@ -60,25 +62,31 @@ export class RemoteRuntimeController extends RuntimeController {
 	}
 
 	async #previewToken(
-		props: Parameters<typeof createRemoteWorkerInit>[0] &
-			Parameters<typeof getWorkerAccountAndContext>[0]
+		props: Omit<CreateRemoteWorkerInitProps, "name"> &
+			Partial<Pick<CreateRemoteWorkerInitProps, "name">> &
+			Parameters<typeof getWorkerAccountAndContext>[0] & { bundleId: number }
 	): Promise<CfPreviewToken | undefined> {
-		try {
-			const init = await createRemoteWorkerInit({
-				bundle: props.bundle,
-				modules: props.modules,
-				accountId: props.accountId,
-				name: props.name,
-				legacyEnv: props.legacyEnv,
-				env: props.env,
-				isWorkersSite: props.isWorkersSite,
-				legacyAssetPaths: props.legacyAssetPaths,
-				format: props.format,
-				bindings: props.bindings,
-				compatibilityDate: props.compatibilityDate,
-				compatibilityFlags: props.compatibilityFlags,
-			});
+		if (!this.#session) {
+			return;
+		}
 
+		try {
+			/*
+			 * Since `getWorkerAccountAndContext`, `createRemoteWorkerInit` and
+			 * `createWorkerPreview` are all async functions, it is technically
+			 * possible that new `bundleComplete` events are trigerred while those
+			 * functions are still executing. In such cases we want to drop the
+			 * current bundle and exit early, to avoid unnecessarily executing any
+			 * further expensive API calls.
+			 *
+			 * For this purpose, we want perform a check before each of these
+			 * functions, to ensure no new `bundleComplete` was triggered.
+			 */
+			// If we received a new `bundleComplete` event before we were able to
+			// dispatch a `reloadComplete` for this bundle, ignore this bundle.
+			if (props.bundleId !== this.#currentBundleId) {
+				return;
+			}
 			const { workerAccount, workerContext } = await getWorkerAccountAndContext(
 				{
 					accountId: props.accountId,
@@ -86,12 +94,43 @@ export class RemoteRuntimeController extends RuntimeController {
 					legacyEnv: props.legacyEnv,
 					host: props.host,
 					routes: props.routes,
+					sendMetrics: props.sendMetrics,
+					configPath: props.configPath,
 				}
 			);
-			if (!this.#session) {
+
+			const scriptId =
+				props.name ||
+				(workerContext.zone
+					? this.#session.id
+					: this.#session.host.split(".")[0]);
+
+			// If we received a new `bundleComplete` event before we were able to
+			// dispatch a `reloadComplete` for this bundle, ignore this bundle.
+			if (props.bundleId !== this.#currentBundleId) {
 				return;
 			}
+			const init = await createRemoteWorkerInit({
+				bundle: props.bundle,
+				modules: props.modules,
+				accountId: props.accountId,
+				name: scriptId,
+				legacyEnv: props.legacyEnv,
+				env: props.env,
+				isWorkersSite: props.isWorkersSite,
+				assets: props.assets,
+				legacyAssetPaths: props.legacyAssetPaths,
+				format: props.format,
+				bindings: props.bindings,
+				compatibilityDate: props.compatibilityDate,
+				compatibilityFlags: props.compatibilityFlags,
+			});
 
+			// If we received a new `bundleComplete` event before we were able to
+			// dispatch a `reloadComplete` for this bundle, ignore this bundle.
+			if (props.bundleId !== this.#currentBundleId) {
+				return;
+			}
 			const workerPreviewToken = await createWorkerPreview(
 				init,
 				workerAccount,
@@ -155,11 +194,19 @@ export class RemoteRuntimeController extends RuntimeController {
 				legacyEnv: !config.legacy?.enableServiceEnvironments, // wrangler environment -- just pass it through for now
 				host: config.dev.origin?.hostname,
 				routes,
+				sendMetrics: config.sendMetrics,
+				configPath: config.config,
 			});
 
-			const bindings = (
-				await convertBindingsToCfWorkerInitBindings(config.bindings)
-			).bindings;
+			const { bindings } = await convertBindingsToCfWorkerInitBindings(
+				config.bindings
+			);
+
+			// If we received a new `bundleComplete` event before we were able to
+			// dispatch a `reloadComplete` for this bundle, ignore this bundle.
+			if (id !== this.#currentBundleId) {
+				return;
+			}
 
 			const token = await this.#previewToken({
 				bundle,
@@ -169,6 +216,7 @@ export class RemoteRuntimeController extends RuntimeController {
 				legacyEnv: !config.legacy?.enableServiceEnvironments,
 				env: config.env,
 				isWorkersSite: config.legacy?.site !== undefined,
+				assets: config.assets,
 				legacyAssetPaths: config.legacy?.site?.bucket
 					? {
 							baseDirectory: config.legacy?.site?.bucket,
@@ -183,6 +231,10 @@ export class RemoteRuntimeController extends RuntimeController {
 				compatibilityDate: config.compatibilityDate,
 				compatibilityFlags: config.compatibilityFlags,
 				routes,
+				host: config.dev.origin?.hostname,
+				sendMetrics: config.sendMetrics,
+				configPath: config.config,
+				bundleId: id,
 			});
 
 			// If we received a new `bundleComplete` event before we were able to
@@ -215,6 +267,9 @@ export class RemoteRuntimeController extends RuntimeController {
 						...(accessToken
 							? { Cookie: `CF_Authorization=${accessToken}` }
 							: {}),
+						// Make sure we don't pass on CF-Connecting-IP to the remote edgeworker instance
+						// Without this line, remote previews will fail with `DNS points to prohibited IP`
+						"cf-connecting-ip": "",
 					},
 					liveReload: config.dev.liveReload,
 					proxyLogsToController: true,

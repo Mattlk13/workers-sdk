@@ -12,15 +12,17 @@ const generate = async (ctx: C3Context) => {
 const config: TemplateConfig = {
 	configVersion: 1,
 	id: "docusaurus",
+	frameworkCli: "create-docusaurus",
 	platform: "pages",
 	displayName: "Docusaurus",
 	generate,
 	transformPackageJson: async () => ({
 		scripts: {
+			preview: `${npm} run build && wrangler pages dev ./build`,
 			deploy: `${npm} run build && wrangler pages deploy ./build`,
 		},
 	}),
-	devScript: "start",
+	devScript: "preview",
 	deployScript: "deploy",
 };
 export default config;

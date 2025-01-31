@@ -1,21 +1,83 @@
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { collectCLIOutput, normalizeOutput } from "../../../cli/test-util";
 import { printSummary, printWelcomeMessage } from "../dialog";
 import type { C3Context } from "types";
 
 describe("dialog helpers", () => {
 	const std = collectCLIOutput();
+	const originalColumns = process.stdout.columns;
 
-	test("printWelcomeMessage", () => {
-		printWelcomeMessage("0.0.0");
+	beforeAll(() => {
+		process.stdout.columns = 60;
+	});
 
-		expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
-			" ╭──────────────────────────────────────────────────────────────╮
-			 │ 👋 Welcome to create-cloudflare v0.0.0!                      │
-			 │ 🧡 Let's get started.                                        │
-			 ╰──────────────────────────────────────────────────────────────╯
-			"
-		`);
+	afterAll(() => {
+		process.stdout.columns = originalColumns;
+	});
+
+	describe("printWelcomeMessage", () => {
+		test("with telemetry disabled", () => {
+			printWelcomeMessage("0.0.0", false, {});
+
+			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
+				"────────────────────────────────────────────────────────────
+				👋 Welcome to create-cloudflare v0.0.0!
+				🧡 Let's get started.
+				────────────────────────────────────────────────────────────
+
+				"
+			`);
+		});
+
+		test("with telemetry enabled", () => {
+			printWelcomeMessage("0.0.0", true, {});
+
+			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
+				"────────────────────────────────────────────────────────────
+				👋 Welcome to create-cloudflare v0.0.0!
+				🧡 Let's get started.
+				📊 Cloudflare collects telemetry about your usage of Create-Cloudflare.
+
+				Learn more at: https://github.com/cloudflare/workers-sdk/blob/main/packages/create-cloudflare/telemetry.md
+				────────────────────────────────────────────────────────────
+
+				"
+			`);
+		});
+
+		test("with telemetry disabled in experimental mode", () => {
+			printWelcomeMessage("0.0.0", false, { experimental: true });
+
+			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
+				"────────────────────────────────────────────────────────────
+				👋 Welcome to create-cloudflare v0.0.0!
+				🧡 Let's get started.
+
+				🧪 Running in experimental mode
+				────────────────────────────────────────────────────────────
+
+				"
+			`);
+		});
+
+		test("with telemetry enabled in experimental mode", () => {
+			printWelcomeMessage("0.0.0", true, { experimental: true });
+
+			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
+				"────────────────────────────────────────────────────────────
+				👋 Welcome to create-cloudflare v0.0.0!
+				🧡 Let's get started.
+
+				🧪 Running in experimental mode
+
+				📊 Cloudflare collects telemetry about your usage of Create-Cloudflare.
+
+				Learn more at: https://github.com/cloudflare/workers-sdk/blob/main/packages/create-cloudflare/telemetry.md
+				────────────────────────────────────────────────────────────
+
+				"
+			`);
+		});
 	});
 
 	describe("printSummary", () => {
@@ -55,23 +117,27 @@ describe("dialog helpers", () => {
 			await printSummary(ctx);
 
 			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
-				" ╭───────────────────────────────────────────────────────────────────────────────────────╮
-				 │ 🎉  SUCCESS  Application deployed successfully!                                       │
-				 │                                                                                       │
-				 │ 🔍 View Project                                                                       │
-				 │    Visit: https://example.test.workers.dev                                            │
-				 │    Dash: https://dash.cloudflare.com/?to=/:account/workers/services/view/test-project │
-				 │                                                                                       │
-				 │ 💻 Continue Developing                                                                │
-				 │    Start dev server: pnpm run start                                                   │
-				 │    Deploy again: pnpm run deploy                                                      │
-				 │                                                                                       │
-				 │ 📖 Explore Documentation                                                              │
-				 │    https://developers.cloudflare.com/workers                                          │
-				 │                                                                                       │
-				 │ 💬 Join our Community                                                                 │
-				 │    https://discord.cloudflare.com                                                     │
-				 ╰───────────────────────────────────────────────────────────────────────────────────────╯
+				"────────────────────────────────────────────────────────────
+				🎉  SUCCESS  Application deployed successfully!
+
+				🔍 View Project
+				Visit: https://example.test.workers.dev
+				Dash: https://dash.cloudflare.com/?to=/:account/workers/services/view/test-project
+
+				💻 Continue Developing
+				Start dev server: pnpm run start
+				Deploy again: pnpm run deploy
+
+				📖 Explore Documentation
+				https://developers.cloudflare.com/workers
+
+				🐛 Report an Issue
+				https://github.com/cloudflare/workers-sdk/issues/new/choose
+
+				💬 Join our Community
+				https://discord.cloudflare.com
+				────────────────────────────────────────────────────────────
+
 				"
 			`);
 		});
@@ -89,47 +155,24 @@ describe("dialog helpers", () => {
 			});
 
 			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
-				" ╭──────────────────────────────────────────────────────────────╮
-				 │ 🎉  SUCCESS  Application created successfully!               │
-				 │                                                              │
-				 │ 💻 Continue Developing                                       │
-				 │    Change directories: cd ../example                         │
-				 │    Start dev server: pnpm run start                          │
-				 │    Deploy: pnpm run deploy                                   │
-				 │                                                              │
-				 │ 📖 Explore Documentation                                     │
-				 │    https://developers.cloudflare.com/pages                   │
-				 │                                                              │
-				 │ 💬 Join our Community                                        │
-				 │    https://discord.cloudflare.com                            │
-				 ╰──────────────────────────────────────────────────────────────╯
-				"
-			`);
-		});
+				"────────────────────────────────────────────────────────────
+				🎉  SUCCESS  Application created successfully!
 
-		test("with lines truncated", async () => {
-			process.stdout.columns = 40;
+				💻 Continue Developing
+				Change directories: cd ../example
+				Start dev server: pnpm run start
+				Deploy: pnpm run deploy
 
-			await printSummary(ctx);
+				📖 Explore Documentation
+				https://developers.cloudflare.com/pages
 
-			expect(normalizeOutput(std.out)).toMatchInlineSnapshot(`
-				" ╭─────────────────────────────────────╮
-				 │ 🎉  SUCCESS  Application deploye... │
-				 │                                     │
-				 │ 🔍 View Project                     │
-				 │    Visit: https://example.test.w... │
-				 │    Dash: https://dash.cloudflare... │
-				 │                                     │
-				 │ 💻 Continue Developing              │
-				 │    Start dev server: pnpm run start │
-				 │    Deploy again: pnpm run deploy    │
-				 │                                     │
-				 │ 📖 Explore Documentation            │
-				 │    https://developers.cloudflare... │
-				 │                                     │
-				 │ 💬 Join our Community               │
-				 │    https://discord.cloudflare.com   │
-				 ╰─────────────────────────────────────╯
+				🐛 Report an Issue
+				https://github.com/cloudflare/workers-sdk/issues/new/choose
+
+				💬 Join our Community
+				https://discord.cloudflare.com
+				────────────────────────────────────────────────────────────
+
 				"
 			`);
 		});

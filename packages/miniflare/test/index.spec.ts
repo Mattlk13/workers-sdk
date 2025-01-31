@@ -1335,20 +1335,24 @@ test("Miniflare: python modules", async (t) => {
 	t.is(await res.text(), "4");
 });
 
-test("Miniflare: HTTPS fetches using browser CA certificates", async (t) => {
-	const mf = new Miniflare({
-		modules: true,
-		script: `export default {
+if (process.env.CI) {
+	// This test seems to fail on developer machines locally.
+	// Possibly because our WARP setup requires self-signed root CA certificates?
+	test("Miniflare: HTTPS fetches using browser CA certificates", async (t) => {
+		const mf = new Miniflare({
+			modules: true,
+			script: `export default {
 			fetch() {
 				return fetch("https://workers.cloudflare.com/cf.json");
 			}
 		}`,
+		});
+		t.teardown(() => mf.dispose());
+		const res = await mf.dispatchFetch("http://localhost");
+		t.true(res.ok);
+		await res.arrayBuffer(); // (drain)
 	});
-	t.teardown(() => mf.dispose());
-	const res = await mf.dispatchFetch("http://localhost");
-	t.true(res.ok);
-	await res.arrayBuffer(); // (drain)
-});
+}
 
 test("Miniflare: accepts https requests", async (t) => {
 	const log = new TestLog(t);
@@ -2604,6 +2608,85 @@ test("Miniflare: getCf() returns a user provided cf object", async (t) => {
 
 	const cf = await mf.getCf();
 	t.deepEqual(cf, { myFakeField: "test" });
+});
+
+test("Miniflare: dispatchFetch() can override cf", async (t) => {
+	const mf = new Miniflare({
+		script:
+			"export default { fetch(request) { return Response.json(request.cf) } }",
+		modules: true,
+		cf: {
+			myFakeField: "test",
+		},
+	});
+	t.teardown(() => mf.dispose());
+
+	const cf = await mf.dispatchFetch("http://example.com/", {
+		cf: { myFakeField: "test2" },
+	});
+	const cfJson = (await cf.json()) as { myFakeField: string };
+	t.deepEqual(cfJson.myFakeField, "test2");
+});
+
+test("Miniflare: CF-Connecting-IP is injected", async (t) => {
+	const mf = new Miniflare({
+		script:
+			"export default { fetch(request) { return new Response(request.headers.get('CF-Connecting-IP')) } }",
+		modules: true,
+		cf: {
+			myFakeField: "test",
+		},
+	});
+	t.teardown(() => mf.dispose());
+
+	const ip = await mf.dispatchFetch("http://example.com/");
+	// Tracked in https://github.com/cloudflare/workerd/issues/3310
+	if (!isWindows) {
+		t.deepEqual(await ip.text(), "127.0.0.1");
+	} else {
+		t.deepEqual(await ip.text(), "");
+	}
+});
+
+test("Miniflare: CF-Connecting-IP is injected (ipv6)", async (t) => {
+	const mf = new Miniflare({
+		script:
+			"export default { fetch(request) { return new Response(request.headers.get('CF-Connecting-IP')) } }",
+		modules: true,
+		cf: {
+			myFakeField: "test",
+		},
+		host: "::1",
+	});
+	t.teardown(() => mf.dispose());
+
+	const ip = await mf.dispatchFetch("http://example.com/");
+
+	// Tracked in https://github.com/cloudflare/workerd/issues/3310
+	if (!isWindows) {
+		t.deepEqual(await ip.text(), "::1");
+	} else {
+		t.deepEqual(await ip.text(), "");
+	}
+});
+
+test("Miniflare: CF-Connecting-IP is preserved when present", async (t) => {
+	const mf = new Miniflare({
+		script:
+			"export default { fetch(request) { return new Response(request.headers.get('CF-Connecting-IP')) } }",
+		modules: true,
+		cf: {
+			myFakeField: "test",
+		},
+	});
+	t.teardown(() => mf.dispose());
+
+	const ip = await mf.dispatchFetch("http://example.com/", {
+		headers: {
+			"CF-Connecting-IP": "128.0.0.1",
+		},
+	});
+	t.deepEqual(await ip.text(), "128.0.0.1");
 });
 
 test("Miniflare: can use module fallback service", async (t) => {

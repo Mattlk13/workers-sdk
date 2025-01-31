@@ -65,7 +65,8 @@ const configure = async (ctx: C3Context) => {
 const config: TemplateConfig = {
 	configVersion: 1,
 	id: "solid",
-	displayName: "Solid",
+	frameworkCli: "create-solid",
+	displayName: "SolidStart",
 	platform: "pages",
 	copyFiles: {
 		path: "./templates",

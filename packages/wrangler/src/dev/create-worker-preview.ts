@@ -7,11 +7,9 @@ import { logger } from "../logger";
 import { ParseError, parseJSON } from "../parse";
 import { getAccessToken } from "../user/access";
 import { isAbortError } from "../utils/isAbortError";
-import type {
-	CfWorkerContext,
-	CfWorkerInit,
-} from "../deployment-bundle/worker";
+import type { CfWorkerContext } from "../deployment-bundle/worker";
 import type { ApiCredentials } from "../user";
+import type { CfWorkerInitWithName } from "./remote";
 import type { HeadersInit } from "undici";
 
 /**
@@ -192,11 +190,11 @@ export async function createPreviewSession(
 
 	logger.debug("-- END EXCHANGE API RESPONSE");
 	try {
-		const { inspector_websocket, prewarm, token } = parseJSON<{
+		const { inspector_websocket, prewarm, token } = parseJSON(bodyText) as {
 			inspector_websocket: string;
 			token: string;
 			prewarm: string;
-		}>(bodyText);
+		};
 		const inspector = new URL(inspector_websocket);
 		inspector.searchParams.append("cf_workers_preview_token", token);
 
@@ -227,34 +225,34 @@ export async function createPreviewSession(
  */
 async function createPreviewToken(
 	account: CfAccount,
-	worker: CfWorkerInit,
+	worker: CfWorkerInitWithName,
 	ctx: CfWorkerContext,
 	session: CfPreviewSession,
 	abortSignal: AbortSignal
 ): Promise<CfPreviewToken> {
 	const { value, host, inspectorUrl, prewarmUrl } = session;
 	const { accountId } = account;
-	const scriptId = worker.name || (ctx.zone ? session.id : host.split(".")[0]);
 	const url =
 		ctx.env && !ctx.legacyEnv
-			? `/accounts/${accountId}/workers/services/${scriptId}/environments/${ctx.env}/edge-preview`
-			: `/accounts/${accountId}/workers/scripts/${scriptId}/edge-preview`;
+			? `/accounts/${accountId}/workers/services/${worker.name}/environments/${ctx.env}/edge-preview`
+			: `/accounts/${accountId}/workers/scripts/${worker.name}/edge-preview`;
 
 	const mode: CfPreviewMode = ctx.zone
 		? {
-				routes: ctx.routes
-					? // extract all the route patterns
-						ctx.routes.map((route) => {
-							if (typeof route === "string") {
-								return route;
-							}
-							if (route.custom_domain) {
-								return `${route.pattern}/*`;
-							}
-							return route.pattern;
-						})
-					: // if there aren't any patterns, then just match on all routes
-						["*/*"],
+				routes:
+					ctx.routes && ctx.routes.length > 0
+						? // extract all the route patterns
+							ctx.routes.map((route) => {
+								if (typeof route === "string") {
+									return route;
+								}
+								if (route.custom_domain) {
+									return `${route.pattern}/*`;
+								}
+								return route.pattern;
+							})
+						: // if there aren't any patterns, then just match on all routes
+							["*/*"],
 			}
 		: { workers_dev: true };
 
@@ -302,7 +300,7 @@ async function createPreviewToken(
  * const {value, host} = await createWorker(init, acct);
  */
 export async function createWorkerPreview(
-	init: CfWorkerInit,
+	init: CfWorkerInitWithName,
 	account: CfAccount,
 	ctx: CfWorkerContext,
 	session: CfPreviewSession,

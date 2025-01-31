@@ -1,5 +1,5 @@
 import { readConfig } from "../../../../../config";
-import { CommandLineArgsError } from "../../../../../index";
+import { CommandLineArgsError } from "../../../../../errors";
 import { logger } from "../../../../../logger";
 import { postConsumer } from "../../../../client";
 import type {
@@ -74,7 +74,7 @@ function createBody(
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	if (Array.isArray(args.retryDelaySecs)) {
 		throw new CommandLineArgsError(

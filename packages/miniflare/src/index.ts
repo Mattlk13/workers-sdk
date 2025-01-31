@@ -13,7 +13,12 @@ import zlib from "zlib";
 import exitHook from "exit-hook";
 import { $ as colors$ } from "kleur/colors";
 import stoppable from "stoppable";
-import { Dispatcher, getGlobalDispatcher, Pool } from "undici";
+import {
+	Dispatcher,
+	getGlobalDispatcher,
+	Pool,
+	Response as UndiciResponse,
+} from "undici";
 import SCRIPT_MINIFLARE_SHARED from "worker:shared/index";
 import SCRIPT_MINIFLARE_ZOD from "worker:shared/zod";
 import { WebSocketServer } from "ws";
@@ -23,7 +28,6 @@ import {
 	coupleWebSocket,
 	DispatchFetch,
 	DispatchFetchDispatcher,
-	ENTRY_SOCKET_HTTP_OPTIONS,
 	fetch,
 	getAccessibleHosts,
 	getEntrySocketHttpOptions,
@@ -39,13 +43,13 @@ import {
 	getDirectSocketName,
 	getGlobalServices,
 	HOST_CAPNP_CONNECT,
-	kProxyNodeBinding,
 	KV_PLUGIN_NAME,
 	normaliseDurableObject,
 	PLUGIN_ENTRIES,
 	Plugins,
 	PluginServicesOptions,
 	ProxyClient,
+	ProxyNodeBinding,
 	QueueConsumers,
 	QueueProducers,
 	QUEUES_PLUGIN_NAME,
@@ -59,6 +63,7 @@ import {
 	WorkerOptions,
 	WrappedBindingNames,
 } from "./plugins";
+import { ROUTER_SERVICE_NAME } from "./plugins/assets/constants";
 import {
 	CUSTOM_SERVICE_KNOWN_OUTBOUND,
 	CustomServiceKind,
@@ -311,6 +316,7 @@ function getDurableObjectClassNames(
 				className,
 				// Fallback to current worker service if name not defined
 				serviceName = workerServiceName,
+				enableSql,
 				unsafeUniqueKey,
 				unsafePreventEviction,
 			} = normaliseDurableObject(designator);
@@ -324,6 +330,14 @@ function getDurableObjectClassNames(
 				// If we've already seen this class in this service, make sure the
 				// unsafe unique keys and unsafe prevent eviction values match
 				const existingInfo = classNames.get(className);
+				if (existingInfo?.enableSql !== enableSql) {
+					throw new MiniflareCoreError(
+						"ERR_DIFFERENT_STORAGE_BACKEND",
+						`Different storage backends defined for Durable Object "${className}" in "${serviceName}": ${JSON.stringify(
+							enableSql
+						)} and ${JSON.stringify(existingInfo?.enableSql)}`
+					);
+				}
 				if (existingInfo?.unsafeUniqueKey !== unsafeUniqueKey) {
 					throw new MiniflareCoreError(
 						"ERR_DIFFERENT_UNIQUE_KEYS",
@@ -342,7 +356,11 @@ function getDurableObjectClassNames(
 				}
 			} else {
 				// Otherwise, just add it
-				classNames.set(className, { unsafeUniqueKey, unsafePreventEviction });
+				classNames.set(className, {
+					enableSql,
+					unsafeUniqueKey,
+					unsafePreventEviction,
+				});
 			}
 		}
 	}
@@ -401,6 +419,7 @@ function getQueueProducers(
 		if (workerProducers !== undefined) {
 			// De-sugar array consumer options to record mapping to empty options
 			if (Array.isArray(workerProducers)) {
+				// queueProducers: ["MY_QUEUE"]
 				workerProducers = Object.fromEntries(
 					workerProducers.map((bindingName) => [
 						bindingName,
@@ -409,8 +428,20 @@ function getQueueProducers(
 				);
 			}
 
-			for (const [bindingName, opts] of Object.entries(workerProducers)) {
-				queueProducers.set(bindingName, { workerName, ...opts });
+			type Entries<T> = { [K in keyof T]: [K, T[K]] }[keyof T][];
+			type ProducersIterable = Entries<typeof workerProducers>;
+			const producersIterable = Object.entries(
+				workerProducers
+			) as ProducersIterable;
+
+			for (const [bindingName, opts] of producersIterable) {
+				if (typeof opts === "string") {
+					// queueProducers: { "MY_QUEUE": "my-queue" }
+					queueProducers.set(bindingName, { workerName, queueName: opts });
+				} else {
+					// queueProducers: { QUEUE: { queueName: "QUEUE", ... } }
+					queueProducers.set(bindingName, { workerName, ...opts });
+				}
 			}
 		}
 	}
@@ -816,7 +847,12 @@ export class Miniflare {
 		// Should only define custom service bindings if `service` is a function
 		assert(typeof service === "function");
 		try {
-			const response = await service(request, this);
+			let response: UndiciResponse | Response = await service(request, this);
+
+			if (!(response instanceof Response)) {
+				response = new Response(response.body, response);
+			}
+
 			// Validate return type as `service` is a user defined function
 			// TODO: should we validate outside this try/catch?
 			return z.instanceof(Response).parse(response);
@@ -1080,7 +1116,7 @@ export class Miniflare {
 			sockets.push({
 				name: SOCKET_ENTRY_LOCAL,
 				service: { name: SERVICE_ENTRY },
-				http: ENTRY_SOCKET_HTTP_OPTIONS,
+				http: {},
 				address: "127.0.0.1:0",
 			});
 		}
@@ -1094,11 +1130,27 @@ export class Miniflare {
 			innerBindings: Worker_Binding[];
 		}[] = [];
 
+		if (this.#workerOpts[0].assets.assets) {
+			// This will be the UserWorker, or the vitest pool worker wrapping the UserWorker
+			// The asset plugin needs this so that it can set the binding between the RouterWorker and the UserWorker
+			// TODO: apply this to ever this.#workerOpts, not just the first (i.e this.#workerOpts[0])
+			this.#workerOpts[0].assets.assets.workerName =
+				this.#workerOpts[0].core.name;
+		}
+
 		for (let i = 0; i < allWorkerOpts.length; i++) {
 			const previousWorkerOpts = allPreviousWorkerOpts?.[i];
 			const workerOpts = allWorkerOpts[i];
 			const workerName = workerOpts.core.name ?? "";
 			const isModulesWorker = Boolean(workerOpts.core.modules);
+
+			if (workerOpts.workflows.workflows) {
+				for (const workflow of Object.values(workerOpts.workflows.workflows)) {
+					// This will be the UserWorker, or the vitest pool worker wrapping the UserWorker
+					// The workflows plugin needs this so that it can set the binding between the Engine and the UserWorker
+					workflow.scriptName ??= workerOpts.core.name;
+				}
+			}
 
 			// Collect all bindings from this worker
 			const workerBindings: Worker_Binding[] = [];
@@ -1246,7 +1298,15 @@ export class Miniflare {
 		const globalServices = getGlobalServices({
 			sharedOptions: sharedOpts.core,
 			allWorkerRoutes,
-			fallbackWorkerName: this.#workerOpts[0].core.name,
+			// if Workers + Assets project but NOT Vitest, point to router Worker instead
+			// if Vitest with assets, the self binding on the test runner will point to RW
+			fallbackWorkerName:
+				this.#workerOpts[0].assets.assets &&
+				!this.#workerOpts[0].core.name?.startsWith(
+					"vitest-pool-workers-runner-"
+				)
+					? ROUTER_SERVICE_NAME
+					: getUserServiceName(this.#workerOpts[0].core.name),
 			loopbackPort,
 			log: this.#log,
 			proxyBindings,
@@ -1664,13 +1724,16 @@ export class Miniflare {
 			//  missing in other plugins' options.
 			const pluginBindings = await plugin.getNodeBindings(workerOpts[key]);
 			for (const [name, binding] of Object.entries(pluginBindings)) {
-				if (binding === kProxyNodeBinding) {
+				if (binding instanceof ProxyNodeBinding) {
 					const proxyBindingName = getProxyBindingName(key, workerName, name);
-					const proxy = proxyClient.env[proxyBindingName];
+					let proxy = proxyClient.env[proxyBindingName];
 					assert(
 						proxy !== undefined,
 						`Expected ${proxyBindingName} to be bound`
 					);
+					if (binding.proxyOverrideHandler) {
+						proxy = new Proxy(proxy, binding.proxyOverrideHandler);
+					}
 					bindings[name] = proxy;
 				} else {
 					bindings[name] = binding;

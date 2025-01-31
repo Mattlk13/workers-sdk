@@ -39,12 +39,11 @@ async function getTextFileContents(file: File<string | Uint8Array>) {
 	return readFile(file.path, "utf8");
 }
 
-export const DEFAULT_WORKER_NAME = "worker";
 function getName(config: StartDevWorkerOptions) {
-	return config.name ?? DEFAULT_WORKER_NAME;
+	return config.name;
 }
 
-async function convertToConfigBundle(
+export async function convertToConfigBundle(
 	event: BundleCompleteEvent
 ): Promise<MF.ConfigBundle> {
 	const { bindings, fetchers } = await convertBindingsToCfWorkerInitBindings(
@@ -91,6 +90,7 @@ async function convertToConfigBundle(
 		compatibilityDate: event.config.compatibilityDate,
 		compatibilityFlags: event.config.compatibilityFlags,
 		bindings,
+		migrations: event.config.migrations,
 		workerDefinitions: event.config.dev?.registry,
 		legacyAssetPaths: event.config.legacy?.site?.bucket
 			? {
@@ -100,7 +100,7 @@ async function convertToConfigBundle(
 					includePatterns: event.config.legacy?.site?.include ?? [],
 				}
 			: undefined,
-		experimentalAssets: event.config.experimental?.assets,
+		assets: event.config?.assets,
 		initialPort: undefined,
 		initialIp: "127.0.0.1",
 		rules: [],
@@ -117,6 +117,8 @@ async function convertToConfigBundle(
 		inspect: true,
 		services: bindings.services,
 		serviceBindings: fetchers,
+		bindVectorizeToProd: event.config.dev?.bindVectorizeToProd ?? false,
+		testScheduled: !!event.config.dev.testScheduled,
 	};
 }
 
@@ -151,9 +153,9 @@ export class LocalRuntimeController extends RuntimeController {
 					await convertToConfigBundle(data),
 					this.#proxyToUserWorkerAuthenticationSecret
 				);
+			options.liveReload = false; // TODO: set in buildMiniflareOptions once old code path is removed
 			if (this.#mf === undefined) {
 				logger.log(chalk.dim("⎔ Starting local server..."));
-
 				this.#mf = new Miniflare(options);
 			} else {
 				logger.log(chalk.dim("⎔ Reloading local server..."));

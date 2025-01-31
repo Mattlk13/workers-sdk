@@ -250,7 +250,7 @@ describe("wrangler pages secret", () => {
 						runWrangler("pages secret put the-key --project some-project-name")
 					).rejects.toThrowErrorMatchingInlineSnapshot(`
 						[Error: Failed to automatically retrieve account IDs for the logged in user.
-						In a non-interactive environment, it is mandatory to specify an account ID, either by assigning its value to CLOUDFLARE_ACCOUNT_ID, or as \`account_id\` in your \`wrangler.toml\` file.]
+						In a non-interactive environment, it is mandatory to specify an account ID, either by assigning its value to CLOUDFLARE_ACCOUNT_ID, or as \`account_id\` in your Wrangler configuration file.]
 					`);
 				});
 
@@ -274,7 +274,7 @@ describe("wrangler pages secret", () => {
 						runWrangler("pages secret put the-key --project some-project-name")
 					).rejects.toThrowErrorMatchingInlineSnapshot(`
 						[Error: More than one account available but unable to select one in non-interactive mode.
-						Please set the appropriate \`account_id\` in your \`wrangler.toml\` file.
+						Please set the appropriate \`account_id\` in your Wrangler configuration file or assign it to the \`CLOUDFLARE_ACCOUNT_ID\` environment variable.
 						Available accounts are (\`<name>\`: \`<account_id>\`):
 						  \`account-name-1\`: \`account-id-1\`
 						  \`account-name-2\`: \`account-id-2\`
@@ -513,7 +513,7 @@ describe("wrangler pages secret", () => {
 			await expect(
 				runWrangler(`pages secret bulk --project some-project-name`)
 			).rejects.toMatchInlineSnapshot(
-				`[Error: 🚨 Please provide a JSON file or valid JSON pipe]`
+				`[Error: 🚨 No content found in file or piped input.]`
 			);
 		});
 
@@ -540,10 +540,10 @@ describe("wrangler pages secret", () => {
 
 			await runWrangler(`pages secret bulk --project some-project-name`);
 			expect(std.out).toMatchInlineSnapshot(`
-			"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
-			Finished processing secrets JSON file:
-			✨ 2 secrets successfully uploaded"
-		`);
+				"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
+				Finished processing secrets file:
+				✨ 2 secrets successfully uploaded"
+			`);
 			expect(std.err).toMatchInlineSnapshot(`""`);
 		});
 
@@ -566,16 +566,45 @@ describe("wrangler pages secret", () => {
 					text: "secret_text",
 				},
 			]);
-
 			await runWrangler(
 				"pages secret bulk ./secret.json --project some-project-name"
 			);
 
 			expect(std.out).toMatchInlineSnapshot(`
-			"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
-			Finished processing secrets JSON file:
-			✨ 2 secrets successfully uploaded"
-		`);
+				"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
+				Finished processing secrets file:
+				✨ 2 secrets successfully uploaded"
+			`);
+			expect(std.err).toMatchInlineSnapshot(`""`);
+		});
+
+		it("should create secret bulk w/ env file", async () => {
+			writeFileSync(
+				".env",
+				`SECRET_1=secret-1\nSECRET_2=secret-2\nSECRET_3=secret-3`
+			);
+
+			mockProjectRequests([
+				{
+					name: "SECRET_1",
+					text: "secret-1",
+				},
+				{
+					name: "SECRET_2",
+					text: "secret-2",
+				},
+				{
+					name: "SECRET_3",
+					text: "secret-3",
+				},
+			]);
+			await runWrangler("pages secret bulk .env --project some-project-name");
+
+			expect(std.out).toMatchInlineSnapshot(`
+				"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
+				Finished processing secrets file:
+				✨ 3 secrets successfully uploaded"
+			`);
 			expect(std.err).toMatchInlineSnapshot(`""`);
 		});
 
@@ -607,10 +636,10 @@ describe("wrangler pages secret", () => {
 			);
 
 			expect(std.out).toMatchInlineSnapshot(`
-			"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (preview)
-			Finished processing secrets JSON file:
-			✨ 2 secrets successfully uploaded"
-		`);
+				"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (preview)
+				Finished processing secrets file:
+				✨ 2 secrets successfully uploaded"
+			`);
 			expect(std.err).toMatchInlineSnapshot(`""`);
 		});
 
@@ -665,11 +694,11 @@ describe("wrangler pages secret", () => {
 			);
 
 			expect(std.out).toMatchInlineSnapshot(`
-			"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
-			Finished processing secrets JSON file:
-			✨ 0 secrets successfully uploaded
-			"
-		`);
+				"🌀 Creating the secrets for the Pages project \\"some-project-name\\" (production)
+				Finished processing secrets file:
+				✨ 0 secrets successfully uploaded
+				"
+			`);
 			expect(std.err).toMatchInlineSnapshot(`
 			"[31mX [41;31m[[41;97mERROR[41;31m][0m [1m🚨 7 secrets failed to upload[0m
 

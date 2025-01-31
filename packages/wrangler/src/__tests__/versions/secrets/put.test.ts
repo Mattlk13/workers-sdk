@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { http, HttpResponse } from "msw";
 import { File, FormData } from "undici";
 import { describe, expect, test } from "vitest";
@@ -9,7 +10,7 @@ import { useMockStdin } from "../../helpers/mock-stdin";
 import { msw } from "../../helpers/msw";
 import { runInTempDir } from "../../helpers/run-in-tmp";
 import { runWrangler } from "../../helpers/run-wrangler";
-import { writeWranglerToml } from "../../helpers/write-wrangler-toml";
+import { writeWranglerConfig } from "../../helpers/write-wrangler-config";
 import { mockPostVersion, mockSetupApiCalls } from "./utils";
 
 describe("versions secret put", () => {
@@ -40,55 +41,69 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 		});
-		await runWrangler(
-			"versions secret put NEW_SECRET --name script-name --x-versions"
-		);
+		await runWrangler("versions secret put NEW_SECRET --name script-name");
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret NEW_SECRET.
-			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});
 
-	// For some reason, this always hangs. Not sure why
-	test.skip("can add a new secret (non-interactive)", async () => {
-		setIsTTY(false);
-		const mockStdIn = useMockStdin({ isTTY: false });
+	test("no wrangler configuration warnings shown", async () => {
+		await writeFile("wrangler.json", JSON.stringify({ invalid_field: true }));
+		setIsTTY(true);
 
-		mockSetupApiCalls();
-		mockPostVersion((metadata) => {
-			expect(metadata.bindings).toStrictEqual([
-				{ type: "secret_text", name: "NEW_SECRET", text: "the-secret" },
-			]);
-			expect(metadata.keep_bindings).toStrictEqual([
-				"secret_key",
-				"secret_text",
-			]);
+		mockPrompt({
+			text: "Enter a secret value:",
+			options: { isSecret: true },
+			result: "the-secret",
 		});
 
-		mockStdIn.send(
-			`the`,
-			`-`,
-			`secret
-			` // whitespace & newline being removed
-		);
-		await runWrangler(
-			"versions secret put NEW_SECRET --name script-name --x-versions"
-		);
-
-		expect(std.out).toMatchInlineSnapshot(`
-			"🌀 Creating the secret for the Worker \\"script-name\\"
-			✨ Success! Created version id with secret NEW_SECRET.
-			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command wrangler versions deploy."
-		`);
+		mockSetupApiCalls();
+		mockPostVersion();
+		await runWrangler("versions secret put NEW_SECRET --name script-name");
+		expect(std.warn).toMatchInlineSnapshot(`""`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
+	});
+
+	describe("(non-interactive)", () => {
+		const mockStdIn = useMockStdin({ isTTY: false });
+		test("can add a new secret (non-interactive)", async () => {
+			mockSetupApiCalls();
+			mockPostVersion((metadata) => {
+				expect(metadata.bindings).toStrictEqual([
+					{ type: "secret_text", name: "NEW_SECRET", text: "the-secret" },
+				]);
+				expect(metadata.keep_bindings).toStrictEqual([
+					"secret_key",
+					"secret_text",
+				]);
+				expect(metadata.keep_assets).toBeTruthy();
+			});
+
+			mockStdIn.send(
+				`the`,
+				`-`,
+				`secret
+			` // whitespace & newline being removed
+			);
+			await runWrangler("versions secret put NEW_SECRET --name script-name");
+
+			expect(std.out).toMatchInlineSnapshot(`
+				"🌀 Creating the secret for the Worker \\"script-name\\"
+				✨ Success! Created version id with secret NEW_SECRET.
+				➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy\\"."
+			`);
+			expect(std.err).toMatchInlineSnapshot(`""`);
+		});
 	});
 
 	test("can add a new secret, read Worker name from wrangler.toml", async () => {
-		writeWranglerToml({ name: "script-name" });
+		writeWranglerConfig({ name: "script-name" });
 
 		setIsTTY(true);
 
@@ -107,13 +122,14 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 		});
-		await runWrangler("versions secret put NEW_SECRET --x-versions");
+		await runWrangler("versions secret put NEW_SECRET");
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret NEW_SECRET.
-			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});
@@ -136,6 +152,7 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 
 			expect(metadata.annotations).not.toBeUndefined();
 			expect(
@@ -143,13 +160,13 @@ describe("versions secret put", () => {
 			).toBe("Deploy a new secret");
 		});
 		await runWrangler(
-			"versions secret put NEW_SECRET --name script-name --message 'Deploy a new secret' --x-versions"
+			"versions secret put NEW_SECRET --name script-name --message 'Deploy a new secret'"
 		);
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret NEW_SECRET.
-			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});
@@ -172,6 +189,7 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 
 			expect(metadata.annotations).not.toBeUndefined();
 			expect(
@@ -182,13 +200,13 @@ describe("versions secret put", () => {
 			).toBe("v1");
 		});
 		await runWrangler(
-			"versions secret put NEW_SECRET --name script-name --message 'Deploy a new secret' --tag v1 --x-versions"
+			"versions secret put NEW_SECRET --name script-name --message 'Deploy a new secret' --tag v1"
 		);
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret NEW_SECRET.
-			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret NEW_SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});
@@ -211,6 +229,7 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 
 			expect(metadata.annotations).not.toBeUndefined();
 			expect(
@@ -218,13 +237,13 @@ describe("versions secret put", () => {
 			).toBe("Deploy a new secret");
 		});
 		await runWrangler(
-			"versions secret put SECRET --name script-name --message 'Deploy a new secret' --x-versions"
+			"versions secret put SECRET --name script-name --message 'Deploy a new secret'"
 		);
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret SECRET.
-			➡️  To deploy this version with secret SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});
@@ -286,6 +305,7 @@ describe("versions secret put", () => {
 				"secret_key",
 				"secret_text",
 			]);
+			expect(metadata.keep_assets).toBeTruthy();
 
 			expect(metadata.annotations).not.toBeUndefined();
 			expect(
@@ -293,13 +313,13 @@ describe("versions secret put", () => {
 			).toBe("Deploy a new secret");
 		});
 		await runWrangler(
-			"versions secret put SECRET --name script-name --message 'Deploy a new secret' --x-versions"
+			"versions secret put SECRET --name script-name --message 'Deploy a new secret'"
 		);
 
 		expect(std.out).toMatchInlineSnapshot(`
 			"🌀 Creating the secret for the Worker \\"script-name\\"
 			✨ Success! Created version id with secret SECRET.
-			➡️  To deploy this version with secret SECRET to production traffic use the command \\"wrangler versions deploy --x-versions\\"."
+			➡️  To deploy this version with secret SECRET to production traffic use the command \\"wrangler versions deploy\\"."
 		`);
 		expect(std.err).toMatchInlineSnapshot(`""`);
 	});

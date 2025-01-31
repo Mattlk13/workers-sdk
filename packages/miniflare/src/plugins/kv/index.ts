@@ -11,13 +11,13 @@ import { SharedBindings } from "../../workers";
 import {
 	getMiniflareObjectBindings,
 	getPersistPath,
-	kProxyNodeBinding,
 	migrateDatabase,
 	namespaceEntries,
 	namespaceKeys,
 	objectEntryWorker,
 	PersistenceSchema,
 	Plugin,
+	ProxyNodeBinding,
 	SERVICE_LOOPBACK,
 } from "../shared";
 import { KV_PLUGIN_NAME } from "./constants";
@@ -73,16 +73,20 @@ export const KV_PLUGIN: Plugin<
 
 		return bindings;
 	},
+
 	async getNodeBindings(options) {
 		const namespaces = namespaceKeys(options.kvNamespaces);
 		const bindings = Object.fromEntries(
-			namespaces.map((name) => [name, kProxyNodeBinding])
+			namespaces.map((name) => [name, new ProxyNodeBinding()])
 		);
+
 		if (isWorkersSitesEnabled(options)) {
 			Object.assign(bindings, await getSitesNodeBindings(options));
 		}
+
 		return bindings;
 	},
+
 	async getServices({
 		options,
 		sharedOptions,
@@ -153,6 +157,7 @@ export const KV_PLUGIN: Plugin<
 
 		return services;
 	},
+
 	getPersistPath({ kvPersist }, tmpPath) {
 		return getPersistPath(KV_PLUGIN_NAME, tmpPath, kvPersist);
 	},
