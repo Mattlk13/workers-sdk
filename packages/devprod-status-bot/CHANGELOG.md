@@ -1,5 +1,17 @@
 # devprod-status-bot
 
+## 1.1.4
+
+### Patch Changes
+
+- [#7486](https://github.com/cloudflare/workers-sdk/pull/7486) [`7e40e14`](https://github.com/cloudflare/workers-sdk/commit/7e40e145a8c3642c493a2f082eb32a1231c62ff8) Thanks [@penalosa](https://github.com/penalosa)! - Limit status bot repos
+
+## 1.1.3
+
+### Patch Changes
+
+- [#7143](https://github.com/cloudflare/workers-sdk/pull/7143) [`4d7ce6f`](https://github.com/cloudflare/workers-sdk/commit/4d7ce6fd9fc80a0920a97dae14726c79012337b1) Thanks [@emily-shen](https://github.com/emily-shen)! - chore: enable observability on our internal infra Workers + bots
+
 ## 1.1.2
 
 ### Patch Changes

@@ -8,7 +8,7 @@ import { mswListNewDeploymentsLatestFull } from "./helpers/msw/handlers/versions
 import { runInTempDir } from "./helpers/run-in-tmp";
 import { runWrangler } from "./helpers/run-wrangler";
 import { writeWorkerSource } from "./helpers/write-worker-source";
-import { writeWranglerToml } from "./helpers/write-wrangler-toml";
+import { writeWranglerConfig } from "./helpers/write-wrangler-config";
 
 describe("deprecated-usage-model", () => {
 	mockAccountId();
@@ -31,7 +31,7 @@ describe("deprecated-usage-model", () => {
 			...mswSuccessDeploymentScriptMetadata,
 			...mswListNewDeploymentsLatestFull
 		);
-		writeWranglerToml({ usage_model: "bundled" });
+		writeWranglerConfig({ usage_model: "bundled" });
 		writeWorkerSource();
 		mockSubDomainRequest();
 		mockUploadWorkerRequest();
@@ -39,17 +39,17 @@ describe("deprecated-usage-model", () => {
 		await runWrangler("deploy ./index");
 
 		expect(std.warn).toMatchInlineSnapshot(`
-		"[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mThe \`usage_model\` defined in wrangler.toml is deprecated and no longer used. Visit our developer docs for details: https://developers.cloudflare.com/workers/wrangler/configuration/#usage-model[0m
+			"[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mThe \`usage_model\` defined in your wrangler.toml file is deprecated and no longer used. Visit our developer docs for details: https://developers.cloudflare.com/workers/wrangler/configuration/#usage-model[0m
 
-		"
-	`);
+			"
+		`);
 	});
 	it("should not warn user about ignored usage model if usage_model not specified", async () => {
 		msw.use(
 			...mswSuccessDeploymentScriptMetadata,
 			...mswListNewDeploymentsLatestFull
 		);
-		writeWranglerToml();
+		writeWranglerConfig();
 		writeWorkerSource();
 		mockSubDomainRequest();
 		mockUploadWorkerRequest();
@@ -57,22 +57,19 @@ describe("deprecated-usage-model", () => {
 		await runWrangler("deploy ./index");
 
 		expect(std).toMatchInlineSnapshot(`
-		Object {
-		  "debug": "",
-		  "err": "",
-		  "info": "",
-		  "out": "Total Upload: xx KiB / gzip: xx KiB
-		Worker Startup Time: 100 ms
-		Uploaded test-name (TIMINGS)
-		Published test-name (TIMINGS)
-		  https://test-name.test-sub-domain.workers.dev
-		Current Deployment ID: Galaxy-Class
-		Current Version ID: Galaxy-Class
-
-
-		Note: Deployment ID has been renamed to Version ID. Deployment ID is present to maintain compatibility with the previous behavior of this command. This output will change in a future version of Wrangler. To learn more visit: https://developers.cloudflare.com/workers/configuration/versions-and-deployments",
-		  "warn": "",
-		}
-	`);
+			Object {
+			  "debug": "",
+			  "err": "",
+			  "info": "",
+			  "out": "Total Upload: xx KiB / gzip: xx KiB
+			Worker Startup Time: 100 ms
+			No bindings found.
+			Uploaded test-name (TIMINGS)
+			Deployed test-name triggers (TIMINGS)
+			  https://test-name.test-sub-domain.workers.dev
+			Current Version ID: Galaxy-Class",
+			  "warn": "",
+			}
+		`);
 	});
 });

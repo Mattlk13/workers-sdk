@@ -10,14 +10,17 @@ import { MockWebSocket } from "./helpers/mock-web-socket";
 import { createFetchResult, msw, mswSucessScriptHandlers } from "./helpers/msw";
 import { runInTempDir } from "./helpers/run-in-tmp";
 import { runWrangler } from "./helpers/run-wrangler";
+import { writeWranglerConfig } from "./helpers/write-wrangler-config";
 import type {
 	AlarmEvent,
 	EmailEvent,
 	QueueEvent,
 	RequestEvent,
+	RpcEvent,
 	ScheduledEvent,
 	TailEvent,
 	TailEventMessage,
+	TailEventMessageType,
 	TailInfo,
 } from "../tail/createTail";
 import type { RequestInit } from "undici";
@@ -73,7 +76,7 @@ describe("tail", () => {
 			await expect(
 				runWrangler("tail")
 			).rejects.toThrowErrorMatchingInlineSnapshot(
-				`[Error: Required Worker name missing. Please specify the Worker name in wrangler.toml, or pass it as an argument with \`wrangler tail <worker-name>\`]`
+				`[Error: Required Worker name missing. Please specify the Worker name in your Wrangler configuration file, or pass it as an argument with \`wrangler tail <worker-name>\`]`
 			);
 		});
 
@@ -90,6 +93,7 @@ describe("tail", () => {
 			await api.closeHelper();
 			expect(api.requests.deletion.count).toStrictEqual(1);
 		});
+
 		it("should connect to the worker assigned to a given route", async () => {
 			api = mockWebsocketAPIs();
 			expect(api.requests.creation.length).toStrictEqual(0);
@@ -531,6 +535,33 @@ describe("tail", () => {
 			await api.closeHelper();
 		});
 
+		it("logs rpc messages in pretty format", async () => {
+			api = mockWebsocketAPIs();
+			await runWrangler("tail test-worker --format pretty");
+
+			const event = generateMockRpcEvent();
+			const message = generateMockEventMessage({
+				entrypoint: "MyDurableObject",
+				event,
+			});
+			const serializedMessage = serialize(message);
+
+			api.ws.send(serializedMessage);
+			expect(
+				std.out
+					.replace(
+						new Date(mockEventTimestamp).toLocaleString(),
+						"[mock event timestamp]"
+					)
+					.replace(mockTailExpiration.toISOString(), "[mock expiration date]")
+			).toMatchInlineSnapshot(`
+			        "Successfully created tail, expires at [mock expiration date]
+			        Connected to test-worker, waiting for logs...
+			        MyDurableObject.foo - Ok @ [mock event timestamp]"
+		      `);
+			await api.closeHelper();
+		});
+
 		it("logs scheduled messages in pretty format", async () => {
 			api = mockWebsocketAPIs();
 			await runWrangler("tail test-worker --format pretty");
@@ -843,6 +874,21 @@ describe("tail", () => {
 			await api.closeHelper();
 		});
 	});
+
+	it("should error helpfully if pages_build_output_dir is set in wrangler.toml", async () => {
+		writeWranglerConfig({
+			pages_build_output_dir: "public",
+			name: "test-name",
+		});
+		await expect(
+			runWrangler("tail")
+		).rejects.toThrowErrorMatchingInlineSnapshot(
+			`
+			[Error: It looks like you've run a Workers-specific command in a Pages project.
+			For Pages, please run \`wrangler pages deployment tail\` instead.]
+		`
+		);
+	});
 });
 
 /* helpers */
@@ -892,18 +938,7 @@ function serialize(message: TailEventMessage): WebSocket.RawData {
  * @param event A TailEvent
  * @returns true if `event` is a RequestEvent
  */
-function isRequest(
-	event:
-		| ScheduledEvent
-		| RequestEvent
-		| AlarmEvent
-		| EmailEvent
-		| TailEvent
-		| TailInfo
-		| QueueEvent
-		| undefined
-		| null
-): event is RequestEvent {
+function isRequest(event: TailEventMessageType): event is RequestEvent {
 	return Boolean(event && "request" in event);
 }
 
@@ -1117,6 +1152,7 @@ function mockWebsocketAPIs(
  */
 function generateMockEventMessage({
 	outcome = "ok",
+	entrypoint = undefined,
 	exceptions = [],
 	logs = [],
 	eventTimestamp = mockEventTimestamp,
@@ -1124,6 +1160,7 @@ function generateMockEventMessage({
 }: Partial<TailEventMessage>): TailEventMessage {
 	return {
 		outcome,
+		entrypoint,
 		exceptions,
 		logs,
 		eventTimestamp,
@@ -1211,5 +1248,11 @@ function generateMockQueueEvent(opts?: Partial<QueueEvent>): QueueEvent {
 	return {
 		queue: opts?.queue || "my-queue123",
 		batchSize: opts?.batchSize || 7,
+	};
+}
+
+function generateMockRpcEvent(opts?: Partial<RpcEvent>): RpcEvent {
+	return {
+		rpcMethod: opts?.rpcMethod || "foo",
 	};
 }

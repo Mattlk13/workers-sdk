@@ -189,7 +189,6 @@ async function sendStartThreadMessage(pat: string, webhookUrl: string, ai: Ai) {
 				pr.user &&
 				[
 					"penalosa",
-					"RamIdeas",
 					"lrapoport-cf",
 					"petebacondarwin",
 					"CarmenPopoviciu",
@@ -446,7 +445,7 @@ async function sendUpcomingReleaseMessage(pat: string, webhookUrl: string) {
 	await sendMessage(
 		webhookUrl,
 		{
-			text: "cc <users/103802752659756021218> <users/111710439474343081424>",
+			text: "cc <users/103802752659756021218>",
 		},
 		"release-notification"
 	);
@@ -531,10 +530,10 @@ export default {
 		}
 
 		if (url.pathname.startsWith("/pr-project") && request.method === "POST") {
-			const [_, _prefix, repo, prNumber] = url.pathname.split("/");
+			const [_, _prefix, _repo, prNumber] = url.pathname.split("/");
 			return await addPRToProject(
 				env.GITHUB_PAT,
-				repo.replaceAll(/[^a-z-]/g, "-"),
+				"workers-sdk",
 				prNumber.replaceAll(/[^0-9]/g, "-")
 			);
 		}

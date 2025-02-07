@@ -3,12 +3,13 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
-		"start": "wrangler dev --x-dev-env",
+		"start": "wrangler dev",
 		"test:ci": "vitest run",
 		"test:watch": "vitest"
 	},
 	"devDependencies": {
 		"get-port": "^7.0.0",
+		"vitest": "catalog:default",
 		"wrangler": "workspace:*"
 	},
 	"volta": {

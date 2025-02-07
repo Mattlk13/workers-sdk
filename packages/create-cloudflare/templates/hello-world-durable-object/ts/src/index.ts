@@ -7,41 +7,20 @@ import { DurableObject } from "cloudflare:workers";
  * - Open a browser tab at http://localhost:8787/ to see your Durable Object in action
  * - Run `npm run deploy` to publish your application
  *
- * Bind resources to your worker in `wrangler.toml`. After adding bindings, a type definition for the
+ * Bind resources to your worker in `wrangler.json`. After adding bindings, a type definition for the
  * `Env` object can be regenerated with `npm run cf-typegen`.
  *
  * Learn more at https://developers.cloudflare.com/durable-objects
  */
 
-
-/**
- * Associate bindings declared in wrangler.toml with the TypeScript type system
- */
-export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
-	// MY_KV_NAMESPACE: KVNamespace;
-	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	MY_DURABLE_OBJECT: DurableObjectNamespace<MyDurableObject>;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
-	// MY_BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
-}
-
 /** A Durable Object's behavior is defined in an exported Javascript class */
-export class MyDurableObject extends DurableObject {
+export class MyDurableObject extends DurableObject<Env> {
 	/**
 	 * The constructor is invoked once upon creation of the Durable Object, i.e. the first call to
 	 * 	`DurableObjectStub::get` for a given identifier (no-op constructors can be omitted)
 	 *
 	 * @param ctx - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.toml
+	 * @param env - The interface to reference bindings declared in wrangler.json
 	 */
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -64,7 +43,7 @@ export default {
 	 * This is the standard fetch handler for a Cloudflare Worker
 	 *
 	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.toml
+	 * @param env - The interface to reference bindings declared in wrangler.json
 	 * @param ctx - The execution context of the Worker
 	 * @returns The response to be sent back to the client
 	 */

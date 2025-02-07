@@ -1,21 +1,13 @@
 import { fetchResult } from "../../cfetch";
 import { performApiFetch } from "../../cfetch/internal";
+import { createNamespace } from "../../core/create-command";
 import {
 	createWorkerUploadForm,
 	fromMimeType,
 } from "../../deployment-bundle/create-worker-upload-form";
 import { FatalError, UserError } from "../../errors";
 import { getMetricsUsageHeaders } from "../../metrics";
-import {
-	versionsSecretPutBulkHandler,
-	versionsSecretsPutBulkOptions,
-} from "./bulk";
-import {
-	versionsSecretDeleteHandler,
-	versionsSecretsDeleteOptions,
-} from "./delete";
-import { versionsSecretListHandler, versionsSecretsListOptions } from "./list";
-import { versionsSecretPutHandler, versionsSecretsPutOptions } from "./put";
+import type { Observability } from "../../config/environment";
 import type {
 	WorkerMetadata as CfWorkerMetadata,
 	WorkerMetadataBinding,
@@ -27,36 +19,15 @@ import type {
 	CfWorkerInit,
 	CfWorkerSourceMap,
 } from "../../deployment-bundle/worker";
-import type { CommonYargsArgv } from "../../yargs-types";
 import type { File, SpecIterableIterator } from "undici";
 
-export function registerVersionsSecretsSubcommands(yargs: CommonYargsArgv) {
-	return yargs
-		.command(
-			"put <key>",
-			"Create or update a secret variable for a Worker",
-			versionsSecretsPutOptions,
-			versionsSecretPutHandler
-		)
-		.command(
-			"bulk [json]",
-			"Create or update a secret variable for a Worker",
-			versionsSecretsPutBulkOptions,
-			versionsSecretPutBulkHandler
-		)
-		.command(
-			"delete <key>",
-			"Delete a secret variable from a Worker",
-			versionsSecretsDeleteOptions,
-			versionsSecretDeleteHandler
-		)
-		.command(
-			"list",
-			"List the secrets currently deployed",
-			versionsSecretsListOptions,
-			versionsSecretListHandler
-		);
-}
+export const versionsSecretNamespace = createNamespace({
+	metadata: {
+		description: "Generate a secret that can be referenced in a Worker",
+		status: "stable",
+		owner: "Workers: Authoring and Testing",
+	},
+});
 
 // Shared code
 export interface WorkerVersion {
@@ -104,7 +75,10 @@ export interface VersionDetails {
 interface ScriptSettings {
 	logpush: boolean;
 	tail_consumers: CfTailConsumer[] | null;
+	observability: Observability;
 }
+
+type CfUnsafeMetadata = Record<string, unknown>;
 
 interface CopyLatestWorkerVersionArgs {
 	accountId: string;
@@ -115,6 +89,7 @@ interface CopyLatestWorkerVersionArgs {
 	versionTag?: string;
 	sendMetrics?: boolean;
 	overrideAllSecrets?: boolean; // Used for delete - this will make sure we do not inherit any
+	unsafeMetadata?: CfUnsafeMetadata | undefined;
 }
 
 // TODO: This is a naive implementation, replace later
@@ -126,6 +101,7 @@ export async function copyWorkerVersionWithNewSecrets({
 	versionMessage,
 	versionTag,
 	sendMetrics,
+	unsafeMetadata,
 	overrideAllSecrets,
 }: CopyLatestWorkerVersionArgs) {
 	// Grab the specific version info
@@ -185,7 +161,9 @@ export async function copyWorkerVersionWithNewSecrets({
 	const worker: CfWorkerInit = {
 		name: scriptName,
 		main: mainModule,
-		bindings: {} as CfWorkerInit["bindings"], // handled in rawBindings
+		bindings: {
+			unsafe: { metadata: unsafeMetadata }, // pass along unsafe metadata
+		} as CfWorkerInit["bindings"], // handled in rawBindings
 		rawBindings: bindings,
 		modules,
 		sourceMaps: sourceMaps,
@@ -207,7 +185,9 @@ export async function copyWorkerVersionWithNewSecrets({
 			"workers/message": versionMessage,
 			"workers/tag": versionTag,
 		},
-		experimental_assets: undefined,
+		keep_assets: true,
+		assets: undefined,
+		observability: scriptSettings.observability,
 	};
 
 	const body = createWorkerUploadForm(worker);
@@ -255,7 +235,7 @@ async function parseModules(
 		// Workers Sites is not supported
 		if (formData.get("__STATIC_CONTENT_MANIFEST") !== null) {
 			throw new UserError(
-				"Workers Sites and Legacy Assets do not support updating secrets through `wrangler versions secret put`. You must use `wrangler secret put` instead."
+				"Workers Sites and legacy assets do not support updating secrets through `wrangler versions secret put`. You must use `wrangler secret put` instead."
 			);
 		}
 
@@ -273,7 +253,7 @@ async function parseModules(
 		const mainModule: CfModule = {
 			name: entrypointPart.name,
 			filePath: "",
-			content: Buffer.from(await entrypointPart.arrayBuffer()),
+			content: Buffer.from<ArrayBuffer>(await entrypointPart.arrayBuffer()),
 			type: fromMimeType(entrypointPart.type),
 		};
 

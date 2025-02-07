@@ -4,15 +4,15 @@ import { spinner, spinnerWhile } from "@cloudflare/cli/interactive";
 import chalk from "chalk";
 import { Miniflare } from "miniflare";
 import { fetch } from "undici";
-import { printWranglerBanner } from "..";
 import { fetchResult } from "../cfetch";
-import { readConfig } from "../config";
+import { configFileName, readConfig } from "../config";
 import { getLocalPersistencePath } from "../dev/get-local-persistence-path";
 import { UserError } from "../errors";
 import { logger } from "../logger";
 import { APIError } from "../parse";
 import { readableRelative } from "../paths";
 import { requireAuth } from "../user";
+import { printWranglerBanner } from "../wrangler-banner";
 import { Name } from "./options";
 import { getDatabaseByNameOrBinding, getDatabaseInfoFromConfig } from "./utils";
 import type { Config } from "../config";
@@ -72,13 +72,9 @@ export function Options(yargs: CommonYargsArgv) {
 
 type HandlerOptions = StrictYargsOptionsToInterface<typeof Options>;
 export const Handler = async (args: HandlerOptions): Promise<void> => {
-	const { local, remote, name, output, schema, data, table } = args;
+	const { remote, name, output, schema, data, table } = args;
 	await printWranglerBanner();
-	const config = readConfig(args.config, args);
-
-	if (!local && !remote) {
-		throw new UserError(`You must specify either --local or --remote`);
-	}
+	const config = readConfig(args);
 
 	if (!schema && !data) {
 		throw new UserError(`You cannot specify both --no-schema and --no-data`);
@@ -91,10 +87,10 @@ export const Handler = async (args: HandlerOptions): Promise<void> => {
 			: [table]
 		: [];
 
-	if (local) {
-		return await exportLocal(config, name, output, tables, !schema, !data);
-	} else {
+	if (remote) {
 		return await exportRemotely(config, name, output, tables, !schema, !data);
+	} else {
+		return await exportLocal(config, name, output, tables, !schema, !data);
 	}
 };
 
@@ -109,7 +105,7 @@ async function exportLocal(
 	const localDB = getDatabaseInfoFromConfig(config, name);
 	if (!localDB) {
 		throw new UserError(
-			`Couldn't find a D1 DB with the name or binding '${name}' in wrangler.toml.`
+			`Couldn't find a D1 DB with the name or binding '${name}' in your ${configFileName(config.configPath)} file.`
 		);
 	}
 
@@ -117,7 +113,7 @@ async function exportLocal(
 
 	// TODO: should we allow customising persistence path?
 	// Should it be --persist-to for consistency (even though this isn't persisting anything)?
-	const persistencePath = getLocalPersistencePath(undefined, config.configPath);
+	const persistencePath = getLocalPersistencePath(undefined, config);
 	const d1Persist = path.join(persistencePath, "v3", "d1");
 
 	logger.log(

@@ -1,5 +1,8 @@
-name = "assets-worker"
+name = "worker-with-assets"
+main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-[experimental_assets]
+[assets]
 directory = "./public"
+binding="ASSETS"
+experimental_serve_directly = true

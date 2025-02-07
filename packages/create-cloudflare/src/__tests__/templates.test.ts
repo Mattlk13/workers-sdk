@@ -1,5 +1,4 @@
 import { existsSync, statSync } from "fs";
-import { crash } from "@cloudflare/cli";
 import { spinner } from "@cloudflare/cli/interactive";
 import degit from "degit";
 import { mockSpinner } from "helpers/__tests__/mocks";
@@ -12,8 +11,8 @@ import {
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	addWranglerToGitIgnore,
+	deriveCorrelatedArgs,
 	downloadRemoteTemplate,
-	inferLanguageArg,
 } from "../templates";
 import type { PathLike } from "fs";
 import type { C3Args, C3Context } from "types";
@@ -21,7 +20,6 @@ import type { C3Args, C3Context } from "types";
 vi.mock("degit");
 vi.mock("fs");
 vi.mock("helpers/files");
-vi.mock("@cloudflare/cli");
 vi.mock("@cloudflare/cli/interactive");
 
 beforeEach(() => {
@@ -283,44 +281,39 @@ describe("downloadRemoteTemplate", () => {
 	});
 });
 
-describe("inferLanguageArg", () => {
-	test("should infer as TypeScript if `--ts` is specified", async () => {
+describe("deriveCorrelatedArgs", () => {
+	test("should derive the lang as TypeScript if `--ts` is specified", () => {
 		const args: Partial<C3Args> = {
 			ts: true,
 		};
 
-		inferLanguageArg(args);
+		deriveCorrelatedArgs(args);
 
 		expect(args.lang).toBe("ts");
 	});
 
-	test("should infer as JavaScript if `--ts=false` is specified", async () => {
+	test("should derive the lang as JavaScript if `--ts=false` is specified", () => {
 		const args: Partial<C3Args> = {
 			ts: false,
 		};
 
-		inferLanguageArg(args);
+		deriveCorrelatedArgs(args);
 
 		expect(args.lang).toBe("js");
 	});
 
-	test("should crash only if both the lang and ts arguments are specified", async () => {
-		let args: Partial<C3Args> = {
-			lang: "ts",
-		};
-
-		inferLanguageArg(args);
-
-		expect(args.lang).toBe("ts");
-		expect(crash).not.toBeCalled();
-
-		args = {
-			ts: true,
-			lang: "ts",
-		};
-		inferLanguageArg(args);
-
-		expect(crash).toBeCalledWith(
+	test("should crash if both the lang and ts arguments are specified", () => {
+		expect(() =>
+			deriveCorrelatedArgs({
+				lang: "ts",
+			}),
+		).not.toThrow();
+		expect(() =>
+			deriveCorrelatedArgs({
+				ts: true,
+				lang: "ts",
+			}),
+		).toThrow(
 			"The `--ts` argument cannot be specified in conjunction with the `--lang` argument",
 		);
 	});

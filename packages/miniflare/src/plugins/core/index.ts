@@ -33,13 +33,14 @@ import {
 	CoreHeaders,
 	viewToBuffer,
 } from "../../workers";
+import { ROUTER_SERVICE_NAME } from "../assets/constants";
 import { getCacheServiceName } from "../cache";
 import { DURABLE_OBJECTS_STORAGE_SERVICE_NAME } from "../do";
 import {
-	kProxyNodeBinding,
 	kUnsafeEphemeralUniqueKey,
 	parseRoutes,
 	Plugin,
+	ProxyNodeBinding,
 	SERVICE_LOOPBACK,
 	WORKER_BINDING_SERVICE_LOOPBACK,
 } from "../shared";
@@ -146,6 +147,11 @@ const CoreOptionsSchemaInput = z.intersection(
 
 		unsafeEvalBinding: z.string().optional(),
 		unsafeUseModuleFallbackService: z.boolean().optional(),
+
+		/** Used to set the vitest pool worker SELF binding to point to the router worker if there are assets.
+		 (If there are assets but we're not using vitest, the miniflare entry worker can point directly to RW.)
+		 */
+		hasAssetsAndIsVitest: z.boolean().optional(),
 	})
 );
 export const CoreOptionsSchema = CoreOptionsSchemaInput.transform((value) => {
@@ -231,7 +237,8 @@ function getCustomServiceDesignator(
 	workerIndex: number,
 	kind: CustomServiceKind,
 	name: string,
-	service: z.infer<typeof ServiceDesignatorSchema>
+	service: z.infer<typeof ServiceDesignatorSchema>,
+	hasAssetsAndIsVitest: boolean = false
 ): ServiceDesignator {
 	let serviceName: string;
 	let entrypoint: string | undefined;
@@ -239,8 +246,10 @@ function getCustomServiceDesignator(
 		// Custom `fetch` function
 		serviceName = getCustomServiceName(workerIndex, kind, name);
 	} else if (typeof service === "object") {
+		// Worker with entrypoint
 		if ("name" in service) {
 			if (service.name === kCurrentWorker) {
+				// TODO when fetch on WorkerEntrypoints with assets is fixed in dev: point this router worker if assets are present.
 				serviceName = getUserServiceName(refererName);
 			} else {
 				serviceName = getUserServiceName(service.name);
@@ -251,7 +260,10 @@ function getCustomServiceDesignator(
 			serviceName = getBuiltinServiceName(workerIndex, kind, name);
 		}
 	} else if (service === kCurrentWorker) {
-		serviceName = getUserServiceName(refererName);
+		// Sets SELF binding to point to router worker instead if assets are present.
+		serviceName = hasAssetsAndIsVitest
+			? `${ROUTER_SERVICE_NAME}:${refererName}`
+			: getUserServiceName(refererName);
 	} else {
 		// Regular user worker
 		serviceName = getUserServiceName(service);
@@ -327,11 +339,20 @@ function validateCompatibilityDate(log: Log, compatibilityDate: string) {
 	return compatibilityDate;
 }
 
-function buildJsonBindings(bindings: Record<string, Json>): Worker_Binding[] {
-	return Object.entries(bindings).map(([name, value]) => ({
-		name,
-		json: JSON.stringify(value),
-	}));
+function buildBindings(bindings: Record<string, Json>): Worker_Binding[] {
+	return Object.entries(bindings).map(([name, value]) => {
+		if (typeof value === "string") {
+			return {
+				name,
+				text: value,
+			};
+		} else {
+			return {
+				name,
+				json: JSON.stringify(value),
+			};
+		}
+	});
 }
 
 const WRAPPED_MODULE_PREFIX = "miniflare-internal:wrapped:";
@@ -356,7 +377,7 @@ export const CORE_PLUGIN: Plugin<
 		const bindings: Awaitable<Worker_Binding>[] = [];
 
 		if (options.bindings !== undefined) {
-			bindings.push(...buildJsonBindings(options.bindings));
+			bindings.push(...buildBindings(options.bindings));
 		}
 		if (options.wasmBindings !== undefined) {
 			bindings.push(
@@ -393,7 +414,8 @@ export const CORE_PLUGIN: Plugin<
 							workerIndex,
 							CustomServiceKind.UNKNOWN,
 							name,
-							service
+							service,
+							options.hasAssetsAndIsVitest
 						),
 					};
 				})
@@ -411,7 +433,7 @@ export const CORE_PLUGIN: Plugin<
 					// Build binding
 					const moduleName = workerNameToWrappedModule(scriptName);
 					const innerBindings =
-						bindings === undefined ? [] : buildJsonBindings(bindings);
+						bindings === undefined ? [] : buildBindings(bindings);
 					// `scriptName`'s bindings will be added to `innerBindings` when
 					// assembling the config
 					return {
@@ -473,7 +495,7 @@ export const CORE_PLUGIN: Plugin<
 			bindingEntries.push(
 				...Object.keys(options.serviceBindings).map((name) => [
 					name,
-					kProxyNodeBinding,
+					new ProxyNodeBinding(),
 				])
 			);
 		}
@@ -481,7 +503,7 @@ export const CORE_PLUGIN: Plugin<
 			bindingEntries.push(
 				...Object.keys(options.wrappedBindings).map((name) => [
 					name,
-					kProxyNodeBinding,
+					new ProxyNodeBinding(),
 				])
 			);
 		}
@@ -612,16 +634,21 @@ export const CORE_PLUGIN: Plugin<
 					bindings: workerBindings,
 					durableObjectNamespaces:
 						classNamesEntries.map<Worker_DurableObjectNamespace>(
-							([className, { unsafeUniqueKey, unsafePreventEviction }]) => {
+							([
+								className,
+								{ enableSql, unsafeUniqueKey, unsafePreventEviction },
+							]) => {
 								if (unsafeUniqueKey === kUnsafeEphemeralUniqueKey) {
 									return {
 										className,
+										enableSql,
 										ephemeralLocal: kVoid,
 										preventEviction: unsafePreventEviction,
 									};
 								} else {
 									return {
 										className,
+										enableSql,
 										// This `uniqueKey` will (among other things) be used as part of the
 										// path when persisting to the file-system. `-` is invalid in
 										// JavaScript class names, but safe on filesystems (incl. Windows).
@@ -646,7 +673,8 @@ export const CORE_PLUGIN: Plugin<
 									workerIndex,
 									CustomServiceKind.KNOWN,
 									CUSTOM_SERVICE_KNOWN_OUTBOUND,
-									options.outboundService
+									options.outboundService,
+									options.hasAssetsAndIsVitest
 								),
 					cacheApiOutbound: { name: getCacheServiceName(workerIndex) },
 					moduleFallback:
@@ -712,7 +740,7 @@ export function getGlobalServices({
 		{ name: CoreBindings.JSON_LOG_LEVEL, json: JSON.stringify(log.level) },
 		{
 			name: CoreBindings.SERVICE_USER_FALLBACK,
-			service: { name: getUserServiceName(fallbackWorkerName) },
+			service: { name: fallbackWorkerName },
 		},
 		...workerNames.map((name) => ({
 			name: CoreBindings.SERVICE_USER_ROUTE_PREFIX + name,
@@ -802,7 +830,10 @@ export function getGlobalServices({
 }
 
 function getWorkerScript(
-	options: SourceOptions & { compatibilityFlags?: string[] },
+	options: SourceOptions & {
+		compatibilityDate?: string;
+		compatibilityFlags?: string[];
+	},
 	workerIndex: number,
 	additionalModuleNames: string[]
 ): { serviceWorkerScript: string } | { modules: Worker_Module[] } {
@@ -838,6 +869,7 @@ function getWorkerScript(
 			modulesRoot,
 			additionalModuleNames,
 			options.modulesRules,
+			options.compatibilityDate,
 			options.compatibilityFlags
 		);
 		// If `script` and `scriptPath` are set, resolve modules in `script`
@@ -857,3 +889,4 @@ export * from "./proxy";
 export * from "./constants";
 export * from "./modules";
 export * from "./services";
+export * from "./node-compat";

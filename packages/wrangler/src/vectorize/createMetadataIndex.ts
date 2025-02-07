@@ -1,7 +1,7 @@
 import { readConfig } from "../config";
 import { logger } from "../logger";
 import { createMetadataIndex } from "./client";
-import { vectorizeBetaWarning } from "./common";
+import { vectorizeGABanner } from "./common";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
@@ -30,13 +30,13 @@ export function options(yargs: CommonYargsArgv) {
 			description:
 				"The type of metadata property to index. Valid types are 'string', 'number' and 'boolean'.",
 		})
-		.epilogue(vectorizeBetaWarning);
+		.epilogue(vectorizeGABanner);
 }
 
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	const reqOptions: VectorizeMetadataIndexProperty = {
 		propertyName: args.propertyName,

@@ -8,7 +8,7 @@ import { mockGetMemberships } from "../helpers/mock-oauth-flow";
 import { msw } from "../helpers/msw";
 import { runInTempDir } from "../helpers/run-in-tmp";
 import { runWrangler } from "../helpers/run-wrangler";
-import { writeWranglerToml } from "../helpers/write-wrangler-toml";
+import { writeWranglerConfig } from "../helpers/write-wrangler-config";
 
 describe("export", () => {
 	mockAccountId({ accountId: null });
@@ -18,21 +18,27 @@ describe("export", () => {
 	const { setIsTTY } = useMockIsTTY();
 
 	it("should throw if output is missing", async () => {
-		await expect(runWrangler("d1 export db --local")).rejects.toThrowError(
+		await expect(runWrangler("d1 export db")).rejects.toThrowError(
 			`Missing required argument: output`
 		);
 	});
 
+	it("should throw if local and remote are both set", async () => {
+		await expect(
+			runWrangler("d1 export db --local --remote --output test-local.sql")
+		).rejects.toThrowError("Arguments local and remote are mutually exclusive");
+	});
+
 	it("should handle local", async () => {
 		setIsTTY(false);
-		writeWranglerToml({
+		writeWranglerConfig({
 			d1_databases: [
 				{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 			],
 		});
 
 		// Verify the basic command works with an empty DB
-		await runWrangler("d1 export db --local --output test-local.sql");
+		await runWrangler("d1 export db --output test-local.sql");
 		expect(fs.readFileSync("test-local.sql", "utf8")).toBe(
 			"PRAGMA defer_foreign_keys=TRUE;"
 		);
@@ -47,7 +53,7 @@ describe("export", () => {
 				INSERT INTO bar (value) VALUES ('aaa'),('bbb'),('ccc');
 			`
 		);
-		await runWrangler("d1 execute db --local --file data.sql");
+		await runWrangler("d1 execute db --file data.sql");
 
 		// SQL output expectations
 		const create_foo = "CREATE TABLE foo(id INTEGER PRIMARY KEY, value TEXT);";
@@ -64,7 +70,7 @@ describe("export", () => {
 		];
 
 		// Full export
-		await runWrangler("d1 export db --local --output test-full.sql");
+		await runWrangler("d1 export db --output test-full.sql");
 		expect(fs.readFileSync("test-full.sql", "utf8")).toBe(
 			[
 				"PRAGMA defer_foreign_keys=TRUE;",
@@ -76,17 +82,13 @@ describe("export", () => {
 		);
 
 		// Schema only
-		await runWrangler(
-			"d1 export db --local --output test-schema.sql --no-data"
-		);
+		await runWrangler("d1 export db --output test-schema.sql --no-data");
 		expect(fs.readFileSync("test-schema.sql", "utf8")).toBe(
 			["PRAGMA defer_foreign_keys=TRUE;", create_foo, create_bar].join("\n")
 		);
 
 		// Data only
-		await runWrangler(
-			"d1 export db --local --output test-data.sql --no-schema"
-		);
+		await runWrangler("d1 export db --output test-data.sql --no-schema");
 		expect(fs.readFileSync("test-data.sql", "utf8")).toBe(
 			["PRAGMA defer_foreign_keys=TRUE;", ...insert_foo, ...insert_bar].join(
 				"\n"
@@ -94,9 +96,7 @@ describe("export", () => {
 		);
 
 		// Foo only
-		await runWrangler(
-			"d1 export db --local --output test-data.sql --table foo"
-		);
+		await runWrangler("d1 export db --output test-data.sql --table foo");
 		expect(fs.readFileSync("test-data.sql", "utf8")).toBe(
 			["PRAGMA defer_foreign_keys=TRUE;", create_foo, ...insert_foo].join("\n")
 		);
@@ -104,7 +104,7 @@ describe("export", () => {
 
 	it("should handle remote", async () => {
 		setIsTTY(false);
-		writeWranglerToml({
+		writeWranglerConfig({
 			d1_databases: [
 				{ binding: "DATABASE", database_name: "db", database_id: "xxxx" },
 			],

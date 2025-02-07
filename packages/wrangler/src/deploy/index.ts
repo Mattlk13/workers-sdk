@@ -1,20 +1,22 @@
+import assert from "node:assert";
 import path from "node:path";
-import { findWranglerToml, readConfig } from "../config";
+import { getAssetsOptions, validateAssetsArgsAndConfig } from "../assets";
+import { configFileName, readConfig } from "../config";
 import { getEntry } from "../deployment-bundle/entry";
+import { getCIOverrideName } from "../environment-variables/misc-variables";
 import { UserError } from "../errors";
-import { processExperimentalAssetsArg } from "../experimental-assets";
-import {
-	getRules,
-	getScriptName,
-	isLegacyEnv,
-	printWranglerBanner,
-} from "../index";
+import { run } from "../experimental-flags";
 import { logger } from "../logger";
+import { verifyWorkerMatchesCITag } from "../match-tag";
 import * as metrics from "../metrics";
 import { writeOutput } from "../output";
 import { getLegacyAssetPaths, getSiteAssetPaths } from "../sites";
 import { requireAuth } from "../user";
 import { collectKeyValues } from "../utils/collectKeyValues";
+import { getRules } from "../utils/getRules";
+import { getScriptName } from "../utils/getScriptName";
+import { isLegacyEnv } from "../utils/isLegacyEnv";
+import { printWranglerBanner } from "../wrangler-banner";
 import deploy from "./deploy";
 import type { Config } from "../config";
 import type {
@@ -25,7 +27,7 @@ import type {
 async function standardPricingWarning(config: Config) {
 	if (config.usage_model !== undefined) {
 		logger.warn(
-			"The `usage_model` defined in wrangler.toml is deprecated and no longer used. Visit our developer docs for details: https://developers.cloudflare.com/workers/wrangler/configuration/#usage-model"
+			`The \`usage_model\` defined in your ${configFileName(config.configPath)} file is deprecated and no longer used. Visit our developer docs for details: https://developers.cloudflare.com/workers/wrangler/configuration/#usage-model`
 		);
 	}
 }
@@ -62,12 +64,6 @@ export function deployOptions(yargs: CommonYargsArgv) {
 				type: "string",
 				requiresArg: true,
 			})
-			.option("format", {
-				choices: ["modules", "service-worker"] as const,
-				describe: "Choose an entry type",
-				deprecated: true,
-				hidden: true,
-			})
 			.option("compatibility-date", {
 				describe: "Date to use for compatibility checks",
 				type: "string",
@@ -85,6 +81,17 @@ export function deployOptions(yargs: CommonYargsArgv) {
 				type: "boolean",
 				default: false,
 			})
+			.option("assets", {
+				describe: "Static assets to be served. Replaces Workers Sites.",
+				type: "string",
+				requiresArg: true,
+			})
+			.option("format", {
+				choices: ["modules", "service-worker"] as const,
+				describe: "Choose an entry type",
+				deprecated: true,
+				hidden: true,
+			})
 			.option("experimental-public", {
 				describe: "(Deprecated) Static assets to be served",
 				type: "string",
@@ -100,27 +107,18 @@ export function deployOptions(yargs: CommonYargsArgv) {
 				hidden: true,
 			})
 			.option("legacy-assets", {
-				describe: "(Experimental) Static assets to be served",
-				type: "string",
-				requiresArg: true,
-			})
-			.option("assets", {
-				describe: "(Experimental) Static assets to be served",
-				type: "string",
-				requiresArg: true,
-				hidden: true,
-			})
-			.option("experimental-assets", {
 				describe: "Static assets to be served",
 				type: "string",
-				alias: "x-assets",
 				requiresArg: true,
+				deprecated: true,
 				hidden: true,
 			})
 			.option("site", {
 				describe: "Root folder of static assets for Workers Sites",
 				type: "string",
 				requiresArg: true,
+				hidden: true,
+				deprecated: true,
 			})
 			.option("site-include", {
 				describe:
@@ -128,6 +126,8 @@ export function deployOptions(yargs: CommonYargsArgv) {
 				type: "string",
 				requiresArg: true,
 				array: true,
+				hidden: true,
+				deprecated: true,
 			})
 			.option("site-exclude", {
 				describe:
@@ -135,6 +135,8 @@ export function deployOptions(yargs: CommonYargsArgv) {
 				type: "string",
 				requiresArg: true,
 				array: true,
+				hidden: true,
+				deprecated: true,
 			})
 			.option("var", {
 				describe:
@@ -198,7 +200,7 @@ export function deployOptions(yargs: CommonYargsArgv) {
 			})
 			.option("keep-vars", {
 				describe:
-					"Stop wrangler from deleting vars that are not present in the wrangler.toml\nBy default Wrangler will remove all vars and replace them with those found in the wrangler.toml configuration.\nIf your development approach is to modify vars after deployment via the dashboard you may wish to set this flag.",
+					"Stop wrangler from deleting vars that are not present in the Wrangler configuration file\nBy default Wrangler will remove all vars and replace them with those found in the Wrangler configuration.\nIf your development approach is to modify vars after deployment via the dashboard you may wish to set this flag.",
 				default: false,
 				type: "boolean",
 			})
@@ -226,12 +228,30 @@ export function deployOptions(yargs: CommonYargsArgv) {
 					"Name of a dispatch namespace to deploy the Worker to (Workers for Platforms)",
 				type: "string",
 			})
+			.option("experimental-auto-create", {
+				describe: "Automatically provision draft bindings with new resources",
+				type: "boolean",
+				default: true,
+				hidden: true,
+				alias: "x-auto-create",
+			})
 	);
 }
 
-export async function deployHandler(
-	args: StrictYargsOptionsToInterface<typeof deployOptions>
-) {
+export type DeployArgs = StrictYargsOptionsToInterface<typeof deployOptions>;
+
+// TODO: move this into defineCommand behaviour
+export async function deployHandler(args: DeployArgs) {
+	await run(
+		{
+			RESOURCES_PROVISION: args.experimentalProvision ?? false,
+			MULTIWORKER: false,
+		},
+		() => deployWorker(args)
+	);
+}
+
+async function deployWorker(args: DeployArgs) {
 	await printWranglerBanner();
 
 	// Check for deprecated `wrangler publish` command
@@ -241,66 +261,62 @@ export async function deployHandler(
 		);
 	}
 
-	if (args.assets) {
-		logger.warn(
-			`The --assets argument is experimental. We are going to be changing the behavior of this experimental command after August 15th.\n` +
-				`Releases of wrangler after this date will no longer support current functionality.\n` +
-				`Please shift to the --legacy-assets command to preserve the current functionality.`
-		);
-	}
-
 	if (args.legacyAssets) {
 		logger.warn(
-			`The --legacy-assets argument is experimental and may change or break at any time.`
+			`The --legacy-assets argument has been deprecated. Please use --assets instead.\n` +
+				`To learn more about Workers with assets, visit our documentation at https://developers.cloudflare.com/workers/frameworks/.`
 		);
 	}
 
-	if (args.legacyAssets && args.assets) {
-		throw new UserError("Cannot use both --assets and --legacy-assets.");
+	const config = readConfig(args, { useRedirectIfAvailable: true });
+	if (config.pages_build_output_dir) {
+		throw new UserError(
+			"It looks like you've run a Workers-specific command in a Pages project.\n" +
+				"For Pages, please run `wrangler pages deploy` instead.",
+			{ telemetryMessage: true }
+		);
 	}
+	// We use the `userConfigPath` to compute the root of a project,
+	// rather than a redirected (potentially generated) `configPath`.
+	const projectRoot =
+		config.userConfigPath && path.dirname(config.userConfigPath);
 
-	args.legacyAssets = args.legacyAssets ?? args.assets;
-
-	const configPath =
-		args.config || (args.script && findWranglerToml(path.dirname(args.script)));
-	const projectRoot = configPath && path.dirname(configPath);
-	const config = readConfig(configPath, args);
 	const entry = await getEntry(args, config, "deploy");
 
 	if (args.public) {
 		throw new UserError(
-			"The --public field has been deprecated, try --legacy-assets instead."
+			"The --public field has been deprecated, try --legacy-assets instead.",
+			{ telemetryMessage: true }
 		);
 	}
 	if (args.experimentalPublic) {
 		throw new UserError(
-			"The --experimental-public field has been deprecated, try --legacy-assets instead."
+			"The --experimental-public field has been deprecated, try --legacy-assets instead.",
+			{ telemetryMessage: true }
 		);
 	}
 
 	if (
-		(args.legacyAssets ||
-			config.legacy_assets ||
-			args.experimentalAssets ||
-			config.experimental_assets) &&
+		(args.legacyAssets || config.legacy_assets) &&
 		(args.site || config.site)
 	) {
 		throw new UserError(
-			"Cannot use Assets and Workers Sites in the same Worker."
+			"Cannot use legacy assets and Workers Sites in the same Worker.",
+			{ telemetryMessage: true }
 		);
 	}
 
-	if (args.assets) {
-		logger.warn(
-			"The --assets argument is experimental and may change or break at any time"
-		);
+	if (config.workflows?.length) {
+		logger.once.warn("Workflows is currently in open beta.");
 	}
 
-	const experimentalAssets = processExperimentalAssetsArg(args, config);
+	validateAssetsArgsAndConfig(args, config);
+
+	const assetsOptions = getAssetsOptions(args, config);
 
 	if (args.latest) {
 		logger.warn(
-			"Using the latest version of the Workers runtime. To silence this warning, please choose a specific version of the runtime with --compatibility-date, or add a compatibility_date to your wrangler.toml.\n"
+			`Using the latest version of the Workers runtime. To silence this warning, please choose a specific version of the runtime with --compatibility-date, or add a compatibility_date to your ${configFileName(config.configPath)} file.`
 		);
 	}
 
@@ -324,17 +340,31 @@ export async function deployHandler(
 		await standardPricingWarning(config);
 	}
 
-	// Flag use of assets without user worker
-	const experimentalAssetsOptions = experimentalAssets
-		? {
-				...experimentalAssets,
-				staticAssetsOnly: !(args.script || config.main),
-			}
-		: undefined;
-
 	const beforeUpload = Date.now();
-	const name = getScriptName(args, config);
-	const { sourceMapSize, deploymentId, workerTag } = await deploy({
+	let name = getScriptName(args, config);
+
+	const ciOverrideName = getCIOverrideName();
+	let workerNameOverridden = false;
+	if (ciOverrideName !== undefined && ciOverrideName !== name) {
+		logger.warn(
+			`Failed to match Worker name. Your config file is using the Worker name "${name}", but the CI system expected "${ciOverrideName}". Overriding using the CI provided Worker name. Workers Builds connected builds will attempt to open a pull request to resolve this config name mismatch.`
+		);
+		name = ciOverrideName;
+		workerNameOverridden = true;
+	}
+
+	if (!name) {
+		throw new UserError(
+			'You need to provide a name when publishing a worker. Either pass it as a cli arg with `--name <name>` or in your config file as `name = "<name>"`',
+			{ telemetryMessage: true }
+		);
+	}
+
+	if (!args.dryRun) {
+		assert(accountId, "Missing account ID");
+		await verifyWorkerMatchesCITag(accountId, name, config.configPath);
+	}
+	const { sourceMapSize, versionId, workerTag, targets } = await deploy({
 		config,
 		accountId,
 		name,
@@ -353,7 +383,7 @@ export async function deployHandler(
 		jsxFragment: args.jsxFragment,
 		tsconfig: args.tsconfig,
 		routes: args.routes,
-		experimentalAssets: experimentalAssetsOptions,
+		assetsOptions,
 		legacyAssetPaths,
 		legacyEnv: isLegacyEnv(config),
 		minify: args.minify,
@@ -368,7 +398,7 @@ export async function deployHandler(
 		oldAssetTtl: args.oldAssetTtl,
 		projectRoot,
 		dispatchNamespace: args.dispatchNamespace,
-		experimentalVersions: args.experimentalVersions,
+		experimentalAutoCreate: args.experimentalAutoCreate,
 	});
 
 	writeOutput({
@@ -376,11 +406,13 @@ export async function deployHandler(
 		version: 1,
 		worker_name: name ?? null,
 		worker_tag: workerTag,
-		// Note that the `deploymentId` returned from a simple deployment is actually the versionId of the uploaded version.
-		version_id: deploymentId,
+		version_id: versionId,
+		targets,
+		wrangler_environment: args.env,
+		worker_name_overridden: workerNameOverridden,
 	});
 
-	await metrics.sendMetricsEvent(
+	metrics.sendMetricsEvent(
 		"deploy worker script",
 		{
 			usesTypeScript: /\.tsx?$/.test(entry.file),

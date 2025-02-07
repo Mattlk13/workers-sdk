@@ -214,6 +214,15 @@ async function parseCustomPoolOptions(
 		options.defines = define;
 	}
 
+	// Some assets plumbing that should be hidden from the end user
+	if (options.miniflare?.assets) {
+		// (Used to set the SELF binding to point to the router worker instead)
+		options.miniflare.hasAssetsAndIsVitest = true;
+		options.miniflare.assets.routingConfig ??= {};
+		options.miniflare.assets.routingConfig.has_user_worker = Boolean(
+			options.main
+		);
+	}
 	return options;
 }
 
@@ -250,7 +259,7 @@ export async function parseProjectOptions(
 	let workersPoolOptions = poolOptions?.workers ?? {};
 	try {
 		if (typeof workersPoolOptions === "function") {
-			// https://github.com/vitest-dev/vitest/blob/v1.5.0/packages/vitest/src/integrations/inject.ts
+			// https://github.com/vitest-dev/vitest/blob/v2.1.1/packages/vitest/src/integrations/inject.ts
 			const inject = <K extends keyof ProvidedContext>(
 				key: K
 			): ProvidedContext[K] => {
