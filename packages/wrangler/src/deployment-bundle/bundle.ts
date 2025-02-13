@@ -1,9 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import NodeGlobalsPolyfills from "@esbuild-plugins/node-globals-polyfill";
-import NodeModulesPolyfills from "@esbuild-plugins/node-modules-polyfill";
+import chalk from "chalk";
 import * as esbuild from "esbuild";
+import {
+	getBuildConditionsFromEnv,
+	getBuildPlatformFromEnv,
+	getUnenvResolvePathsFromEnv,
+} from "../environment-variables/misc-variables";
 import { UserError } from "../errors";
+import { getFlag } from "../experimental-flags";
 import { getBasePath, getWranglerTmpDir } from "../paths";
 import { applyMiddlewareLoaderFacade } from "./apply-middleware";
 import {
@@ -14,18 +19,28 @@ import { dedupeModulesByName } from "./dedupe-modules";
 import { getEntryPointFromMetafile } from "./entry-point-from-metafile";
 import { cloudflareInternalPlugin } from "./esbuild-plugins/cloudflare-internal";
 import { configProviderPlugin } from "./esbuild-plugins/config-provider";
-import { nodejsHybridPlugin } from "./esbuild-plugins/hybrid-nodejs-compat";
-import { nodejsCompatPlugin } from "./esbuild-plugins/nodejs-compat";
-import { standardURLPlugin } from "./esbuild-plugins/standard-url";
+import { getNodeJSCompatPlugins } from "./esbuild-plugins/nodejs-plugins";
 import { writeAdditionalModules } from "./find-additional-modules";
 import { noopModuleCollector } from "./module-collection";
 import type { Config } from "../config";
-import type { DurableObjectBindings } from "../config/environment";
+import type {
+	DurableObjectBindings,
+	WorkflowBinding,
+} from "../config/environment";
 import type { MiddlewareLoader } from "./apply-middleware";
 import type { Entry } from "./entry";
 import type { ModuleCollector } from "./module-collection";
-import type { NodeJSCompatMode } from "./node-compat";
 import type { CfModule, CfModuleType } from "./worker";
+import type { NodeJSCompatMode } from "miniflare";
+
+// Taken from https://stackoverflow.com/a/3561711
+// which is everything from the tc39 proposal, plus the following two characters: ^/
+// It's also everything included in the URLPattern escape (https://wicg.github.io/urlpattern/#escape-a-regexp-string), plus the following: -
+// As the answer says, there's no downside to escaping these extra characters, so better safe than sorry
+const ESCAPE_REGEX_CHARACTERS = /[-/\\^$*+?.()|[\]{}]/g;
+const escapeRegex = (str: string) => {
+	return str.replace(ESCAPE_REGEX_CHARACTERS, "\\$&");
+};
 
 export const COMMON_ESBUILD_OPTIONS = {
 	// Our workerd runtime uses the same V8 version as recent Chrome, which is highly ES2022 compliant: https://kangax.github.io/compat-table/es2016plus/
@@ -33,8 +48,43 @@ export const COMMON_ESBUILD_OPTIONS = {
 	loader: { ".js": "jsx", ".mjs": "jsx", ".cjs": "jsx" },
 } as const;
 
-// build conditions used by esbuild, and when resolving custom `import` calls
-export const BUILD_CONDITIONS = ["workerd", "worker", "browser"];
+/**
+ * Get the custom build conditions used by esbuild, and when resolving custom `import` calls.
+ *
+ * If we do not override these in an env var, we will set them to "workerd", "worker" and "browser".
+ * If we override in env vars then these will be provided to esbuild instead.
+ *
+ * Whether or not we set custom conditions the `default` condition will always be active.
+ * If the Worker is using ESM syntax, then the `import` condition will also be active.
+ *
+ * Moreover the following applies:
+ * - if the platform is set to `browser` (the default) then the `browser` condition will be active.
+ * - if the platform is set to `node` then the `node` condition will be active.
+ *
+ * See https://esbuild.github.io/api/#how-conditions-work for more info.
+ */
+export function getBuildConditions() {
+	const envVar = getBuildConditionsFromEnv();
+	if (envVar !== undefined) {
+		return envVar.split(",");
+	} else {
+		return ["workerd", "worker", "browser"];
+	}
+}
+
+function getBuildPlatform(): esbuild.Platform {
+	const platform = getBuildPlatformFromEnv();
+	if (
+		platform !== undefined &&
+		!["browser", "node", "neutral"].includes(platform)
+	) {
+		throw new UserError(
+			"Invalid esbuild platform configuration defined in the WRANGLER_BUILD_PLATFORM environment variable.\n" +
+				"Valid platform values are: 'browser', 'node' and 'neutral'."
+		);
+	}
+	return platform as esbuild.Platform;
+}
 
 /**
  * Information about Wrangler's bundling process that needs passed through
@@ -63,31 +113,31 @@ export type BundleOptions = {
 	// A module collector enables you to observe what modules are in the Worker.
 	moduleCollector: ModuleCollector;
 	serveLegacyAssetsFromWorker: boolean;
-	legacyAssets?: Config["legacy_assets"];
-	bypassAssetCache?: boolean;
+	legacyAssets: Config["legacy_assets"] | undefined;
+	bypassAssetCache: boolean | undefined;
 	doBindings: DurableObjectBindings;
-	jsxFactory?: string;
-	jsxFragment?: string;
-	entryName?: string;
-	watch?: boolean;
-	tsconfig?: string;
-	minify?: boolean;
-	nodejsCompatMode?: NodeJSCompatMode;
+	workflowBindings: WorkflowBinding[];
+	jsxFactory: string | undefined;
+	jsxFragment: string | undefined;
+	entryName: string | undefined;
+	watch: boolean | undefined;
+	tsconfig: string | undefined;
+	minify: boolean | undefined;
+	nodejsCompatMode: NodeJSCompatMode | undefined;
 	define: Config["define"];
 	alias: Config["alias"];
 	checkFetch: boolean;
+	mockAnalyticsEngineDatasets: Config["analytics_engine_datasets"];
 	targetConsumer: "dev" | "deploy";
-	testScheduled?: boolean;
-	inject?: string[];
-	loader?: Record<string, string>;
-	sourcemap?: esbuild.CommonOptions["sourcemap"];
-	plugins?: esbuild.Plugin[];
-	isOutfile?: boolean;
-	forPages?: boolean;
+	testScheduled: boolean | undefined;
+	inject: string[] | undefined;
+	sourcemap: esbuild.CommonOptions["sourcemap"] | undefined;
+	plugins: esbuild.Plugin[] | undefined;
+	isOutfile: boolean | undefined;
 	local: boolean;
 	projectRoot: string | undefined;
 	defineNavigatorUserAgent: boolean;
-	external?: string[];
+	external: string[] | undefined;
 };
 
 /**
@@ -102,6 +152,7 @@ export async function bundleWorker(
 		additionalModules = [],
 		serveLegacyAssetsFromWorker,
 		doBindings,
+		workflowBindings,
 		jsxFactory,
 		jsxFragment,
 		entryName,
@@ -112,16 +163,15 @@ export async function bundleWorker(
 		alias,
 		define,
 		checkFetch,
+		mockAnalyticsEngineDatasets,
 		legacyAssets,
 		bypassAssetCache,
 		targetConsumer,
 		testScheduled,
 		inject: injectOption,
-		loader,
 		sourcemap,
 		plugins,
 		isOutfile,
-		forPages,
 		local,
 		projectRoot,
 		defineNavigatorUserAgent,
@@ -137,6 +187,21 @@ export async function bundleWorker(
 
 	// At this point, we take the opportunity to "wrap" the worker with middleware.
 	const middlewareToLoad: MiddlewareLoader[] = [];
+
+	if (
+		targetConsumer === "dev" &&
+		mockAnalyticsEngineDatasets &&
+		mockAnalyticsEngineDatasets.length > 0
+	) {
+		middlewareToLoad.push({
+			name: "mock-analytics-engine",
+			path: "templates/middleware/middleware-mock-analytics-engine.ts",
+			config: {
+				bindings: mockAnalyticsEngineDatasets.map(({ binding }) => binding),
+			},
+			supports: ["modules", "service-worker"],
+		});
+	}
 
 	if (
 		targetConsumer === "dev" &&
@@ -238,6 +303,18 @@ export async function bundleWorker(
 
 		inject.push(checkedFetchFileToInject);
 	}
+
+	// When multiple workers are running we need some way to disambiguate logs between them. Inject a patched version of `globalThis.console` that prefixes logs with the worker name
+	if (getFlag("MULTIWORKER")) {
+		middlewareToLoad.push({
+			name: "patch-console-prefix",
+			path: "templates/middleware/middleware-patch-console-prefix.ts",
+			supports: ["modules", "service-worker"],
+			config: {
+				prefix: chalk.blue(`[${entry.name}]`),
+			},
+		});
+	}
 	// Check that the current worker format is supported by all the active middleware
 	for (const middleware of middlewareToLoad) {
 		if (!middleware.supports.includes(entry.format)) {
@@ -278,12 +355,51 @@ export async function bundleWorker(
 		inject.push(path.resolve(getBasePath(), "templates/modules-watch-stub.js"));
 	}
 
-	const buildOptions: esbuild.BuildOptions & { metafile: true } = {
+	// esbuild's `alias` option is applied after each plugin's onResolve hook,
+	// whereas we would like these user-defined aliases to take precedence over
+	// the unenv polyfill aliases, so we reimplement the aliasing as a plugin
+	// to be applied before that plugin (earlier in the array of plugins)
+	const aliasPlugin: esbuild.Plugin = {
+		name: "alias",
+		setup(build) {
+			if (!alias) {
+				return;
+			}
+
+			// filter the hook calls to only those that match the alias keys
+			// this should avoid slowing down builds which don't use aliasing
+			const filter = new RegExp(
+				Object.keys(alias)
+					.map((key) => escapeRegex(key))
+					.join("|")
+			);
+
+			// reimplement module aliasing as an esbuild plugin onResolve hook
+			build.onResolve({ filter }, (args) => {
+				const aliasPath = alias[args.path];
+				if (aliasPath) {
+					return {
+						// resolve with node resolution
+						path: require.resolve(aliasPath, {
+							// From the esbuild alias docs: "Note that when an import path is substituted using an alias, the resulting import path is resolved in the working directory instead of in the directory containing the source file with the import path."
+							// https://esbuild.github.io/api/#alias:~:text=Note%20that%20when%20an%20import%20path%20is%20substituted%20using%20an%20alias%2C%20the%20resulting%20import%20path%20is%20resolved%20in%20the%20working%20directory%20instead%20of%20in%20the%20directory%20containing%20the%20source%20file%20with%20the%20import%20path.
+							paths: [entry.projectRoot],
+						}),
+					};
+				}
+			});
+		},
+	};
+
+	const unenvResolvePaths = getUnenvResolvePathsFromEnv()?.split(",");
+
+	const buildOptions = {
 		// Don't use entryFile here as the file may have been changed when applying the middleware
 		entryPoints: [entry.file],
 		bundle,
-		absWorkingDir: entry.directory,
+		absWorkingDir: entry.projectRoot,
 		outdir: destination,
+		keepNames: true,
 		entryNames: entryName || path.parse(entryFile).name,
 		...(isOutfile
 			? {
@@ -304,7 +420,8 @@ export async function bundleWorker(
 		sourceRoot: destination,
 		minify,
 		metafile: true,
-		conditions: BUILD_CONDITIONS,
+		conditions: getBuildConditions(),
+		platform: getBuildPlatform(),
 		...(process.env.NODE_ENV && {
 			define: {
 				...(defineNavigatorUserAgent
@@ -317,26 +434,14 @@ export async function bundleWorker(
 				...define,
 			},
 		}),
-		alias,
-		loader: {
-			...COMMON_ESBUILD_OPTIONS.loader,
-			...(loader || {}),
-		},
+		loader: COMMON_ESBUILD_OPTIONS.loader,
 		plugins: [
+			aliasPlugin,
 			moduleCollector.plugin,
-			...(nodejsCompatMode === "legacy"
-				? [
-						NodeGlobalsPolyfills({ buffer: true }),
-						standardURLPlugin(),
-						NodeModulesPolyfills(),
-					]
-				: []),
-			// Runtime Node.js compatibility (will warn if not using nodejs compat flag and are trying to import from a Node.js builtin).
-			...(nodejsCompatMode === "v1" || nodejsCompatMode !== "v2"
-				? [nodejsCompatPlugin(nodejsCompatMode === "v1")]
-				: []),
-			// Hybrid Node.js compatibility
-			...(nodejsCompatMode === "v2" ? [nodejsHybridPlugin()] : []),
+			...getNodeJSCompatPlugins({
+				mode: nodejsCompatMode ?? null,
+				unenvResolvePaths,
+			}),
 			cloudflareInternalPlugin,
 			buildResultPlugin,
 			...(plugins || []),
@@ -355,7 +460,7 @@ export async function bundleWorker(
 		// logging, we disable esbuild's default logging, and log build failures
 		// ourselves.
 		logLevel: "silent",
-	};
+	} satisfies esbuild.BuildOptions;
 
 	let result: esbuild.BuildResult<typeof buildOptions>;
 	let stop: BundleResult["stop"];
@@ -365,7 +470,11 @@ export async function bundleWorker(
 			await ctx.watch();
 			result = await initialBuildResultPromise;
 			if (result.errors.length > 0) {
-				throw new UserError("Failed to build");
+				throw new BuildFailure(
+					"Initial build failed.",
+					result.errors,
+					result.warnings
+				);
 			}
 
 			stop = async function () {
@@ -381,8 +490,8 @@ export async function bundleWorker(
 			};
 		}
 	} catch (e) {
-		if (nodejsCompatMode !== "legacy" && isBuildFailure(e)) {
-			rewriteNodeCompatBuildFailure(e.errors, forPages);
+		if (isBuildFailure(e)) {
+			rewriteNodeCompatBuildFailure(e.errors, nodejsCompatMode);
 		}
 		throw e;
 	}
@@ -400,6 +509,18 @@ export async function bundleWorker(
 		);
 	}
 
+	const notExportedWorkflows = workflowBindings
+		.filter((x) => !x.script_name && !entryPoint.exports.includes(x.class_name))
+		.map((x) => x.class_name);
+	if (notExportedWorkflows.length) {
+		const relativePath = path.relative(process.cwd(), entryFile);
+		throw new UserError(
+			`Your Worker depends on the following Workflows, which are not exported in your entrypoint file: ${notExportedWorkflows.join(
+				", "
+			)}.\nYou should export these objects from your entrypoint, ${relativePath}.`
+		);
+	}
+
 	const bundleType = entryPoint.exports.length > 0 ? "esm" : "commonjs";
 
 	const sourceMapPath = Object.keys(result.metafile.outputs).filter((_path) =>
@@ -407,7 +528,7 @@ export async function bundleWorker(
 	)[0];
 
 	const resolvedEntryPointPath = path.resolve(
-		entry.directory,
+		entry.projectRoot,
 		entryPoint.relativePath
 	);
 
@@ -429,7 +550,40 @@ export async function bundleWorker(
 		sourceMapPath,
 		sourceMapMetadata: {
 			tmpDir: tmpDir.path,
-			entryDirectory: entry.directory,
+			entryDirectory: entry.projectRoot,
 		},
 	};
+}
+
+class BuildFailure extends Error {
+	constructor(
+		message: string,
+		readonly errors: esbuild.Message[],
+		readonly warnings: esbuild.Message[]
+	) {
+		super(message);
+	}
+}
+
+/**
+ * Whether to add middleware to check whether fetch requests use custom ports.
+ *
+ * This is controlled in the runtime by compatibility_flags:
+ *  - `ignore_custom_ports` - check fetch
+ *  - `allow_custom_ports` - do not check fetch
+ *
+ * `allow_custom_ports` became the default on 2024-09-02.
+ */
+export function shouldCheckFetch(
+	compatibilityDate: string = "2000-01-01", // Default to some arbitrary old date
+	compatibilityFlags: string[] = []
+): boolean {
+	// Yes, the logic can be less verbose than this but doing it this way makes it very clear.
+	if (compatibilityFlags.includes("ignore_custom_ports")) {
+		return true;
+	}
+	if (compatibilityFlags.includes("allow_custom_ports")) {
+		return false;
+	}
+	return compatibilityDate < "2024-09-02";
 }

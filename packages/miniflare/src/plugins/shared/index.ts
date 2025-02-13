@@ -44,6 +44,7 @@ export type DurableObjectClassNames = Map<
 	Map<
 		/* className */ string,
 		{
+			enableSql?: boolean;
 			unsafeUniqueKey?: UnsafeUniqueKey;
 			unsafePreventEviction?: boolean;
 		}
@@ -116,9 +117,12 @@ export type Plugin<
 		? { sharedOptions?: undefined }
 		: { sharedOptions: SharedOptions });
 
-// When this is returned as the binding from `PluginBase#getNodeBindings()`,
-// Miniflare will replace it with a proxy to the binding in `workerd`
-export const kProxyNodeBinding = Symbol("kProxyNodeBinding");
+// When an instance of this class is returned as the binding from `PluginBase#getNodeBindings()`,
+// Miniflare will replace it with a proxy to the binding in `workerd`, alongside applying the
+// specified overrides (if there is any)
+export class ProxyNodeBinding {
+	constructor(public proxyOverrideHandler?: ProxyHandler<any>) {}
+}
 
 export function namespaceKeys(
 	namespaces?: Record<string, string> | string[]

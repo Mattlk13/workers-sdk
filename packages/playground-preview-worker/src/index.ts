@@ -63,18 +63,30 @@ async function handleRawHttp(request: Request, url: URL, env: Env) {
 	// request due to exceeding size limits if the value is included twice.
 
 	const headers = new Headers(request.headers);
+
+	// Fallback to the request method for backward compatiblility
+	const method = request.headers.get("X-CF-Http-Method") ?? request.method;
+
+	headers.delete("X-CF-Http-Method");
 	headers.delete("X-CF-Token");
 
-	const workerResponse = await userObject.fetch(
-		url,
-		new Request(request, {
-			headers: {
-				...Object.fromEntries(headers),
-				"cf-run-user-worker": "true",
-			},
-			redirect: "manual",
-		})
-	);
+	const headerEntries = [...headers.entries()];
+
+	for (const header of headerEntries) {
+		if (header[0].startsWith("cf-ew-raw-")) {
+			headers.set(header[0].split("cf-ew-raw-")[1], header[1]);
+			headers.delete(header[0]);
+		}
+	}
+
+	headers.append("cf-run-user-worker", "true");
+
+	const workerResponse = await userObject.fetch(url, {
+		method,
+		headers,
+		body: method === "GET" || method === "HEAD" ? null : request.body,
+		redirect: "manual",
+	});
 
 	const responseHeaders = new Headers(workerResponse.headers);
 
@@ -89,7 +101,6 @@ async function handleRawHttp(request: Request, url: URL, env: Env) {
 
 	// The client needs the raw headers from the worker
 	// Prefix them with `cf-ew-raw-`, so that response headers from _this_ worker don't interfere
-	// @ts-expect-error https://github.com/cloudflare/workerd/issues/2273
 	const setCookieHeader = responseHeaders.getSetCookie();
 	for (const cookie of setCookieHeader) {
 		rawHeaders.append("cf-ew-raw-set-cookie", cookie);

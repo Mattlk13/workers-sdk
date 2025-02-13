@@ -1,5 +1,234 @@
 # @cloudflare/pages-shared
 
+## 0.13.7
+
+### Patch Changes
+
+- Updated dependencies [[`4db1fb5`](https://github.com/cloudflare/workers-sdk/commit/4db1fb5696412c6666589a778184e10386294d71)]:
+  - miniflare@3.20250204.1
+
+## 0.13.6
+
+### Patch Changes
+
+- Updated dependencies [[`c80dbd8`](https://github.com/cloudflare/workers-sdk/commit/c80dbd8d5e53a081cf600e250f1ddda860be1a12), [`0c0374c`](https://github.com/cloudflare/workers-sdk/commit/0c0374cce3908a47f7459ba4810855c1ce124349)]:
+  - miniflare@3.20250204.0
+
+## 0.13.5
+
+### Patch Changes
+
+- Updated dependencies [[`ab49886`](https://github.com/cloudflare/workers-sdk/commit/ab498862b96551774f601403d3e93d2105a18a91)]:
+  - miniflare@3.20250129.0
+
+## 0.13.4
+
+### Patch Changes
+
+- Updated dependencies [[`cf4f47a`](https://github.com/cloudflare/workers-sdk/commit/cf4f47a8af2dc476f8a0e61f0d22f080f191de1f)]:
+  - miniflare@3.20250124.1
+
+## 0.13.3
+
+### Patch Changes
+
+- Updated dependencies [[`40f89a9`](https://github.com/cloudflare/workers-sdk/commit/40f89a90d93f57294e49a6b5ed8ba8cc38e0da77)]:
+  - miniflare@3.20250124.0
+
+## 0.13.2
+
+### Patch Changes
+
+- [#7564](https://github.com/cloudflare/workers-sdk/pull/7564) [`147ab7d`](https://github.com/cloudflare/workers-sdk/commit/147ab7dda6af0546c9ba7b589390aa590e4d6d02) Thanks [@GregBrimble](https://github.com/GregBrimble)! - fix: Key the Early Hints cache entries off of the asset key rather than the request path
+
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [[`8e9aa40`](https://github.com/cloudflare/workers-sdk/commit/8e9aa40a6c914a3a9804dccdca7202aecda45ba7)]:
+  - miniflare@3.20241230.2
+
+## 0.13.0
+
+### Minor Changes
+
+- [#7561](https://github.com/cloudflare/workers-sdk/pull/7561) [`8b48ca6`](https://github.com/cloudflare/workers-sdk/commit/8b48ca6f18160d350cdde7f21a2a9fbb6add45d5) Thanks [@GregBrimble](https://github.com/GregBrimble)! - feat: Return a 304 Not Modified response when matching an asset preservation cache request if appropriate
+
+### Patch Changes
+
+- [#7561](https://github.com/cloudflare/workers-sdk/pull/7561) [`8b48ca6`](https://github.com/cloudflare/workers-sdk/commit/8b48ca6f18160d350cdde7f21a2a9fbb6add45d5) Thanks [@GregBrimble](https://github.com/GregBrimble)! - chore: Remove now-unused asset preservation cache (v1)
+
+- [#7561](https://github.com/cloudflare/workers-sdk/pull/7561) [`8b48ca6`](https://github.com/cloudflare/workers-sdk/commit/8b48ca6f18160d350cdde7f21a2a9fbb6add45d5) Thanks [@GregBrimble](https://github.com/GregBrimble)! - fix: Store an empty result when Early Hints parsing returns nothing or errors. Previously, we weren't storing anything which resulted in Early Hints being parsed on every request.
+
+- Updated dependencies [[`2c76887`](https://github.com/cloudflare/workers-sdk/commit/2c7688737346992d046d2f88eba5c9847ede1365), [`78bdec5`](https://github.com/cloudflare/workers-sdk/commit/78bdec59ce880365b0318eb94d4176b53e950f66)]:
+  - miniflare@3.20241230.1
+
+## 0.12.1
+
+### Patch Changes
+
+- Updated dependencies [[`b4e0af1`](https://github.com/cloudflare/workers-sdk/commit/b4e0af163548ee8cc0aefc9165f67a0f83ea94d4)]:
+  - miniflare@3.20241230.0
+
+## 0.12.0
+
+### Minor Changes
+
+- [#7546](https://github.com/cloudflare/workers-sdk/pull/7546) [`004fd33`](https://github.com/cloudflare/workers-sdk/commit/004fd33d62ab3a77888ffb5538f92135a15d2d3f) Thanks [@GregBrimble](https://github.com/GregBrimble)! - feat: Return a 304 Not Modified response when matching an asset preservation cache request if appropriate
+
+### Patch Changes
+
+- Updated dependencies [[`1488e11`](https://github.com/cloudflare/workers-sdk/commit/1488e118b4a43d032e4f2e69afa1c16c2e54aff6), [`7216835`](https://github.com/cloudflare/workers-sdk/commit/7216835bf7489804905751c6b52e75a8945e7974)]:
+  - miniflare@3.20241218.0
+
+## 0.11.72
+
+### Patch Changes
+
+- [#7544](https://github.com/cloudflare/workers-sdk/pull/7544) [`77bd9a1`](https://github.com/cloudflare/workers-sdk/commit/77bd9a1f8e3975ca8e6d9cb99d2ea3c035ec15a7) Thanks [@GregBrimble](https://github.com/GregBrimble)! - chore: Remove now-unused asset preservation cache (v1)
+
+## 0.11.71
+
+### Patch Changes
+
+- Updated dependencies [[`21a9e24`](https://github.com/cloudflare/workers-sdk/commit/21a9e24bc7cea1e7bf54a77568de98df9b7c8d03)]:
+  - miniflare@3.20241205.0
+
+## 0.11.70
+
+### Patch Changes
+
+- Updated dependencies [[`ac87395`](https://github.com/cloudflare/workers-sdk/commit/ac873952cfca41c67ce7855a73c6d3a8b131be06), [`b3d2e7d`](https://github.com/cloudflare/workers-sdk/commit/b3d2e7dcee4358322f751b54a7b77d47f7b5ca78)]:
+  - miniflare@3.20241106.2
+
+## 0.11.69
+
+### Patch Changes
+
+- Updated dependencies [[`563439b`](https://github.com/cloudflare/workers-sdk/commit/563439bd02c450921b28d721d36be5a70897690d)]:
+  - miniflare@3.20241106.1
+
+## 0.11.68
+
+### Patch Changes
+
+- Updated dependencies [[`1db7846`](https://github.com/cloudflare/workers-sdk/commit/1db7846ec5c356f6b59cddf5f48b16b3e7c73d66)]:
+  - miniflare@3.20241106.0
+
+## 0.11.67
+
+### Patch Changes
+
+- Updated dependencies [[`760e43f`](https://github.com/cloudflare/workers-sdk/commit/760e43ffa197597de5625b96bc91376161f5027a), [`5ef6231`](https://github.com/cloudflare/workers-sdk/commit/5ef6231a5cefbaaef123e6e8ee899fb81fc69e3e)]:
+  - miniflare@3.20241022.0
+
+## 0.11.66
+
+### Patch Changes
+
+- Updated dependencies [[`809193e`](https://github.com/cloudflare/workers-sdk/commit/809193e05ad80c32086acf18646d0bd436cf2bfd)]:
+  - miniflare@3.20241018.0
+
+## 0.11.65
+
+### Patch Changes
+
+- Updated dependencies [[`5761020`](https://github.com/cloudflare/workers-sdk/commit/5761020cb41270ce872ad6c555b263597949c06d), [`7859a04`](https://github.com/cloudflare/workers-sdk/commit/7859a04bcd4b2f1cafe67c371bd236acaf7a2d91)]:
+  - miniflare@3.20241011.0
+
+## 0.11.64
+
+### Patch Changes
+
+- Updated dependencies [[`c863183`](https://github.com/cloudflare/workers-sdk/commit/c86318354f1a6c0f5c096d6b2a884de740552a19)]:
+  - miniflare@3.20241004.0
+
+## 0.11.63
+
+### Patch Changes
+
+- Updated dependencies [[`5c50949`](https://github.com/cloudflare/workers-sdk/commit/5c509494807a1c0418be83c47a459ec80126848e)]:
+  - miniflare@3.20240925.1
+
+## 0.11.62
+
+### Patch Changes
+
+- Updated dependencies [[`5e2e62c`](https://github.com/cloudflare/workers-sdk/commit/5e2e62c165166819c63998ad0c7caaaf57d7b988), [`1c58a74`](https://github.com/cloudflare/workers-sdk/commit/1c58a7470757508e64003d05c76d9deb7f223763)]:
+  - miniflare@3.20240925.0
+
+## 0.11.61
+
+### Patch Changes
+
+- Updated dependencies [[`1ca313f`](https://github.com/cloudflare/workers-sdk/commit/1ca313f2041688cd13e25f0817e3b72dfc930bac)]:
+  - miniflare@3.20240909.5
+
+## 0.11.60
+
+### Patch Changes
+
+- Updated dependencies [[`2ddbb65`](https://github.com/cloudflare/workers-sdk/commit/2ddbb65033e88dfc2127a093fc894ac91bd96369)]:
+  - miniflare@3.20240909.4
+
+## 0.11.59
+
+### Patch Changes
+
+- Updated dependencies [[`2407c41`](https://github.com/cloudflare/workers-sdk/commit/2407c41484f29845a64ccffd9368bc5d234eb831)]:
+  - miniflare@3.20240909.3
+
+## 0.11.58
+
+### Patch Changes
+
+- Updated dependencies [[`5b5dd95`](https://github.com/cloudflare/workers-sdk/commit/5b5dd9573b2c43023cbcba0fbcc3e374465e745e)]:
+  - miniflare@3.20240909.2
+
+## 0.11.57
+
+### Patch Changes
+
+- Updated dependencies [[`d68e8c9`](https://github.com/cloudflare/workers-sdk/commit/d68e8c996ba40eaaf4a3b237f89880bdaafd0113)]:
+  - miniflare@3.20240909.1
+
+## 0.11.56
+
+### Patch Changes
+
+- [#6680](https://github.com/cloudflare/workers-sdk/pull/6680) [`7579bd8`](https://github.com/cloudflare/workers-sdk/commit/7579bd8e53a30a5ae8e3dc606b46e575948c9ff1) Thanks [@WalshyDev](https://github.com/WalshyDev)! - fix: fix Pages redirects going to a hash location to be duped. This means if you have a rule like `/foo/bar /foo#bar` it will no longer result in `/foo#bar#bar` but the correct `/foo#bar`.
+
+- Updated dependencies [[`3f5b934`](https://github.com/cloudflare/workers-sdk/commit/3f5b9343a46dedcb80c8e216eb3ca9d7f687f6cf)]:
+  - miniflare@3.20240909.0
+
+## 0.11.55
+
+### Patch Changes
+
+- Updated dependencies [[`5936282`](https://github.com/cloudflare/workers-sdk/commit/5936282bfbda848b465396a70f6334988d1a57a0), [`6471090`](https://github.com/cloudflare/workers-sdk/commit/64710904ad4055054bea09ebb23ededab140aa79)]:
+  - miniflare@3.20240821.2
+
+## 0.11.54
+
+### Patch Changes
+
+- Updated dependencies [[`e8975a9`](https://github.com/cloudflare/workers-sdk/commit/e8975a93a46d41ea270f63fd9ef40677ccc689c3)]:
+  - miniflare@3.20240821.1
+
+## 0.11.53
+
+### Patch Changes
+
+- Updated dependencies [[`b0e2f0b`](https://github.com/cloudflare/workers-sdk/commit/b0e2f0bfc67bee9c43a64ca12447e778758c27cd)]:
+  - miniflare@3.20240821.0
+
+## 0.11.52
+
+### Patch Changes
+
+- Updated dependencies [[`00f340f`](https://github.com/cloudflare/workers-sdk/commit/00f340f7c1709db777e80a8ea24d245909ff4486)]:
+  - miniflare@3.20240806.1
+
 ## 0.11.51
 
 ### Patch Changes

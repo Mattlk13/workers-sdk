@@ -1,12 +1,12 @@
+import type { AssetsOptions } from "../../assets";
 import type { Config } from "../../config";
 import type {
 	CustomDomainRoute,
-	ExperimentalAssets,
+	DurableObjectMigration,
 	Rule,
 	ZoneIdRoute,
 	ZoneNameRoute,
 } from "../../config/environment";
-import type { NodeJSCompatMode } from "../../deployment-bundle/node-compat";
 import type {
 	CfAnalyticsEngineDataset,
 	CfD1Database,
@@ -17,6 +17,7 @@ import type {
 	CfLogfwdrBinding,
 	CfModule,
 	CfMTlsCertificate,
+	CfPipeline,
 	CfQueue,
 	CfR2Bucket,
 	CfScriptFormat,
@@ -24,6 +25,7 @@ import type {
 	CfService,
 	CfUnsafe,
 	CfVectorize,
+	CfWorkflow,
 } from "../../deployment-bundle/worker";
 import type { WorkerRegistry } from "../../dev-registry";
 import type { CfAccount } from "../../dev/create-worker-preview";
@@ -33,6 +35,7 @@ import type {
 	DispatchFetch,
 	Json,
 	Miniflare,
+	NodeJSCompatMode,
 	Request,
 	Response,
 } from "miniflare";
@@ -57,7 +60,7 @@ export interface StartDevWorkerInput {
 	name?: string;
 	/**
 	 * The javascript or typescript entry-point of the worker.
-	 * This is the `main` property of a wrangler.toml.
+	 * This is the `main` property of a Wrangler configuration file.
 	 * You can specify a file path or provide the contents directly.
 	 */
 	entrypoint?: string;
@@ -73,6 +76,7 @@ export interface StartDevWorkerInput {
 
 	/** The bindings available to the worker. The specified bindind type will be exposed to the worker on the `env` object under the same key. */
 	bindings?: Record<string, Binding>; // Type level constraint for bindings not sharing names
+	migrations?: DurableObjectMigration[];
 	/** The triggers which will cause the worker's exported default handlers to be called. */
 	triggers?: Trigger[];
 
@@ -126,7 +130,7 @@ export interface StartDevWorkerInput {
 		/** Whether the worker runs on the edge or locally. */
 		remote?: boolean;
 		/** Cloudflare Account credentials. Can be provided upfront or as a function which will be called only when required. */
-		auth?: AsyncHook<CfAccount>;
+		auth?: AsyncHook<CfAccount, [Pick<Config, "account_id">]>; // provide config.account_id as a hook param
 		/** Whether local storage (KV, Durable Objects, R2, D1, etc) is persisted. You can also specify the directory to persist data to. */
 		persist?: string;
 		/** Controls which logs are logged 🤙. */
@@ -152,9 +156,18 @@ export interface StartDevWorkerInput {
 		mockFetch?: undici.MockAgent;
 
 		/** Describes the registry of other Workers running locally */
-		registry?: WorkerRegistry;
+		registry?: WorkerRegistry | null;
 
 		testScheduled?: boolean;
+
+		/** Whether to use Vectorize mixed mode -- the worker is run locally but accesses to Vectorize are made remotely */
+		bindVectorizeToProd?: boolean;
+
+		/** Whether to use Images local mode -- this is lower fidelity, but doesn't require network access */
+		imagesLocalMode?: boolean;
+
+		/** Treat this as the primary worker in a multiworker setup (i.e. the first Worker in Miniflare's options) */
+		multiworkerPrimary?: boolean;
 	};
 	legacy?: {
 		site?: Hook<Config["site"], [Config]>;
@@ -162,14 +175,12 @@ export interface StartDevWorkerInput {
 		enableServiceEnvironments?: boolean;
 	};
 	unsafe?: Omit<CfUnsafe, "bindings">;
-	experimental?: {
-		assets?: Omit<ExperimentalAssets, "bindings">;
-	};
+	assets?: string;
 }
 
-export type StartDevWorkerOptions = StartDevWorkerInput & {
-	/** A worker's directory. Usually where the wrangler.toml file is located */
-	directory: string;
+export type StartDevWorkerOptions = Omit<StartDevWorkerInput, "assets"> & {
+	/** A worker's directory. Usually where the Wrangler configuration file is located */
+	projectRoot: string;
 	build: StartDevWorkerInput["build"] & {
 		nodejsCompatMode: NodeJSCompatMode;
 		format: CfScriptFormat;
@@ -177,6 +188,7 @@ export type StartDevWorkerOptions = StartDevWorkerInput & {
 		moduleRules: Rule[];
 		define: Record<string, string>;
 		additionalModules: CfModule[];
+		exports: string[];
 
 		processEntrypoint: boolean;
 	};
@@ -186,8 +198,11 @@ export type StartDevWorkerOptions = StartDevWorkerInput & {
 	};
 	dev: StartDevWorkerInput["dev"] & {
 		persist: string;
+		auth?: AsyncHook<CfAccount>; // redefine without config.account_id hook param (can only be provided by ConfigController with access to the Wrangler configuration file, not by other controllers eg RemoteRuntimeContoller)
 	};
 	entrypoint: string;
+	assets?: AssetsOptions;
+	name: string;
 };
 
 export type HookValues = string | number | boolean | object | undefined | null;
@@ -206,26 +221,6 @@ export type File<Contents = string, Path = string> =
 	| { path: Path } // `path` resolved relative to cwd
 	| { contents: Contents; path?: Path }; // `contents` used instead, `path` can be specified if needed e.g. for module resolution
 export type BinaryFile = File<Uint8Array>; // Note: Node's `Buffer`s are instances of `Uint8Array`
-export type FilePath<Path = string> = Extract<
-	File<undefined, Path>,
-	{ path: Path }
->; // file that must be on disk -- reminder to allow uses of `contents` eventually
-
-export interface Location {
-	hostname?: string;
-	port?: number;
-	secure?: boolean; // Usually `https`, but could be `wss` for inspector
-}
-
-export type PatternRoute = {
-	pattern: string;
-} & (
-	| { pattern: string; customDomain: true }
-	| { pattern: string; zoneId: string; customDomain?: true; zoneName?: never }
-	| { pattern: string; zoneName: string; customDomain?: true; zoneId?: never }
-);
-export type WorkersDevRoute = { workersDev: true };
-export type Route = PatternRoute | WorkersDevRoute;
 
 type QueueConsumer = NonNullable<Config["queues"]["consumers"]>[number];
 
@@ -238,36 +233,35 @@ export type Trigger =
 	| { type: "cron"; cron: string }
 	| ({ type: "queue-consumer" } & QueueConsumer);
 
-type BindingOmit<T> = Omit<T, "binding" | "name">;
+type BindingOmit<T> = Omit<T, "binding">;
+type NameOmit<T> = Omit<T, "name">;
 export type Binding =
 	| { type: "plain_text"; value: string }
 	| { type: "json"; value: Json }
 	| ({ type: "kv_namespace" } & BindingOmit<CfKvNamespace>)
-	| ({ type: "send_email" } & BindingOmit<CfSendEmailBindings>)
+	| ({ type: "send_email" } & NameOmit<CfSendEmailBindings>)
 	| { type: "wasm_module"; source: BinaryFile }
 	| { type: "text_blob"; source: File }
 	| { type: "browser" }
 	| { type: "ai" }
+	| { type: "images" }
 	| { type: "version_metadata" }
 	| { type: "data_blob"; source: BinaryFile }
-	| ({ type: "durable_object_namespace" } & BindingOmit<CfDurableObject>)
+	| ({ type: "durable_object_namespace" } & NameOmit<CfDurableObject>)
+	| ({ type: "workflow" } & BindingOmit<CfWorkflow>)
 	| ({ type: "queue" } & BindingOmit<CfQueue>)
 	| ({ type: "r2_bucket" } & BindingOmit<CfR2Bucket>)
-	| ({ type: "d1" } & Omit<CfD1Database, "binding">)
-	| ({ type: "vectorize" } & Omit<CfVectorize, "binding">)
-	| ({ type: "hyperdrive" } & Omit<CfHyperdrive, "binding">)
-	| ({ type: "service" } & Omit<CfService, "binding">)
+	| ({ type: "d1" } & BindingOmit<CfD1Database>)
+	| ({ type: "vectorize" } & BindingOmit<CfVectorize>)
+	| ({ type: "hyperdrive" } & BindingOmit<CfHyperdrive>)
+	| ({ type: "service" } & BindingOmit<CfService>)
 	| { type: "fetcher"; fetcher: ServiceFetch }
-	| ({ type: "analytics_engine" } & Omit<CfAnalyticsEngineDataset, "binding">)
-	| ({ type: "dispatch_namespace" } & Omit<CfDispatchNamespace, "binding">)
-	| ({ type: "mtls_certificate" } & Omit<CfMTlsCertificate, "binding">)
-	| ({ type: "logfwdr" } & Omit<CfLogfwdrBinding, "name">)
+	| ({ type: "analytics_engine" } & BindingOmit<CfAnalyticsEngineDataset>)
+	| ({ type: "dispatch_namespace" } & BindingOmit<CfDispatchNamespace>)
+	| ({ type: "mtls_certificate" } & BindingOmit<CfMTlsCertificate>)
+	| ({ type: "pipeline" } & BindingOmit<CfPipeline>)
+	| ({ type: "logfwdr" } & NameOmit<CfLogfwdrBinding>)
 	| { type: `unsafe_${string}` }
 	| { type: "assets" };
 
 export type ServiceFetch = (request: Request) => Promise<Response> | Response;
-
-export interface ServiceDesignator {
-	name: string;
-	env?: string;
-}

@@ -1,62 +1,44 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import {
-	afterEach,
-	beforeAll,
-	beforeEach,
-	describe,
-	expect,
-	test,
-} from "vitest";
+import fs, { readFileSync } from "node:fs";
+import { basename } from "node:path";
+import { beforeAll, describe, expect } from "vitest";
 import { version } from "../package.json";
-import { frameworkToTest } from "./frameworkToTest";
+import { getFrameworkToTest } from "./frameworkToTest";
 import {
-	createTestLogStream,
 	isQuarantineMode,
 	keys,
 	recreateLogFolder,
 	runC3,
+	test,
 } from "./helpers";
-import type { WriteStream } from "fs";
 import type { Suite } from "vitest";
+
+const experimental = process.env.E2E_EXPERIMENTAL === "true";
+const frameworkToTest = getFrameworkToTest({ experimental: false });
 
 // Note: skipIf(frameworkToTest) makes it so that all the basic C3 functionality
 //       tests are skipped in case we are testing a specific framework
-describe.skipIf(frameworkToTest || isQuarantineMode())(
+describe.skipIf(experimental || frameworkToTest || isQuarantineMode())(
 	"E2E: Basic C3 functionality ",
 	() => {
-		const tmpDirPath = realpathSync(mkdtempSync(join(tmpdir(), "c3-tests")));
-		const projectPath = join(tmpDirPath, "basic-tests");
-		let logStream: WriteStream;
-
 		beforeAll((ctx) => {
-			recreateLogFolder(ctx as Suite);
+			recreateLogFolder({ experimental }, ctx as Suite);
 		});
 
-		beforeEach((ctx) => {
-			rmSync(projectPath, { recursive: true, force: true });
-			logStream = createTestLogStream(ctx);
-		});
-
-		afterEach(() => {
-			if (existsSync(projectPath)) {
-				rmSync(projectPath, { recursive: true });
-			}
-		});
-
-		test("--version", async () => {
+		test({ experimental })("--version", async ({ logStream }) => {
 			const { output } = await runC3(["--version"], [], logStream);
 			expect(output).toEqual(version);
 		});
 
-		test("--version with positionals", async () => {
-			const argv = ["foo", "bar", "baz", "--version"];
-			const { output } = await runC3(argv, [], logStream);
-			expect(output).toEqual(version);
-		});
+		test({ experimental })(
+			"--version with positionals",
+			async ({ logStream }) => {
+				const argv = ["foo", "bar", "baz", "--version"];
+				const { output } = await runC3(argv, [], logStream);
+				expect(output).toEqual(version);
+			},
+		);
 
-		test("--version with flags", async () => {
+		test({ experimental })("--version with flags", async ({ logStream }) => {
 			const argv = [
 				"foo",
 				"--type",
@@ -68,11 +50,11 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 			expect(output).toEqual(version);
 		});
 
-		test.skipIf(process.platform === "win32")(
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Using arrow keys + enter",
-			async () => {
+			async ({ logStream, project }) => {
 				const { output } = await runC3(
-					[projectPath],
+					[project.path],
 					[
 						{
 							matcher: /What would you like to start with\?/,
@@ -92,13 +74,13 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 						},
 						{
 							matcher: /Do you want to deploy your application/,
-							input: [keys.left, keys.enter],
+							input: [keys.enter],
 						},
 					],
 					logStream,
 				);
 
-				expect(projectPath).toExist();
+				expect(project.path).toExist();
 				expect(output).toContain(`category Hello World example`);
 				expect(output).toContain(`type Hello World Worker`);
 				expect(output).toContain(`lang TypeScript`);
@@ -107,16 +89,16 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 			},
 		);
 
-		test.skipIf(process.platform === "win32")(
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Typing custom responses",
-			async () => {
+			async ({ logStream, project }) => {
 				const { output } = await runC3(
 					[],
 					[
 						{
 							matcher:
 								/In which directory do you want to create your application/,
-							input: [projectPath, keys.enter],
+							input: [project.path, keys.enter],
 						},
 						{
 							matcher: /What would you like to start with\?/,
@@ -142,7 +124,7 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 					logStream,
 				);
 
-				expect(projectPath).toExist();
+				expect(project.path).toExist();
 				expect(output).toContain(`type Scheduled Worker (Cron Trigger)`);
 				expect(output).toContain(`lang JavaScript`);
 				expect(output).toContain(`no git`);
@@ -150,43 +132,74 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 			},
 		);
 
-		test.skipIf(process.platform === "win32")(
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Mixed args and interactive",
-			async () => {
-				const { output } = await runC3(
-					[projectPath, "--ts", "--no-deploy"],
-					[
-						{
-							matcher: /What would you like to start with\?/,
-							input: [keys.enter],
-						},
-						{
-							matcher: /Which template would you like to use\?/,
-							input: [keys.enter],
-						},
-						{
-							matcher: /Do you want to use git for version control/,
-							input: ["n"],
-						},
-					],
-					logStream,
+			async ({ logStream, project }) => {
+				const projectName = basename(project.path);
+				const existingProjectName = Array.from(projectName).reverse().join("");
+				const existingProjectPath = project.path.replace(
+					projectName,
+					existingProjectName,
 				);
+				const existingFilePath = `${existingProjectPath}/example.json`;
 
-				expect(projectPath).toExist();
-				expect(output).toContain(`type Hello World Worker`);
-				expect(output).toContain(`lang TypeScript`);
-				expect(output).toContain(`no git`);
-				expect(output).toContain(`no deploy`);
+				try {
+					// Prepare an existing project with a file
+					fs.mkdirSync(existingProjectPath, { recursive: true });
+					fs.writeFileSync(existingFilePath, `"Hello World"`);
+
+					const { output } = await runC3(
+						[existingProjectPath, "--ts", "--no-deploy"],
+						[
+							// c3 will ask for a new project name as the provided one already exists
+							{
+								matcher:
+									/In which directory do you want to create your application/,
+								input: {
+									type: "text",
+									chunks: [project.path, keys.enter],
+									assertErrorMessage: `ERROR  Directory \`${existingProjectPath}\` already exists and contains files that might conflict. Please choose a new name.`,
+								},
+							},
+							{
+								matcher: /What would you like to start with\?/,
+								input: [keys.enter],
+							},
+							{
+								matcher: /Which template would you like to use\?/,
+								input: [keys.enter],
+							},
+							{
+								matcher: /Do you want to use git for version control/,
+								input: ["n"],
+							},
+						],
+						logStream,
+					);
+
+					expect(project.path).toExist();
+					expect(output).toContain(`type Hello World Worker`);
+					expect(output).toContain(`lang TypeScript`);
+					expect(output).toContain(`no git`);
+					expect(output).toContain(`no deploy`);
+				} finally {
+					fs.rmSync(existingFilePath, {
+						recursive: true,
+						force: true,
+						maxRetries: 10,
+						retryDelay: 100,
+					});
+				}
 			},
 		);
 
-		test.skipIf(process.platform === "win32")(
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Cloning remote template with full GitHub URL",
-			async () => {
+			async ({ logStream, project }) => {
 				const { output } = await runC3(
 					[
-						projectPath,
-						"--template=https://github.com/cloudflare/workers-sdk/tree/main/templates/worker-router",
+						project.path,
+						"--template=https://github.com/cloudflare/workers-graphql-server",
 						"--no-deploy",
 						"--git=false",
 					],
@@ -195,22 +208,60 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 				);
 
 				expect(output).toContain(
-					`repository https://github.com/cloudflare/workers-sdk/tree/main/templates/worker-router`,
+					`repository https://github.com/cloudflare/workers-graphql-server`,
 				);
 				expect(output).toContain(
-					`Cloning template from: github:cloudflare/workers-sdk/templates/worker-router`,
+					`Cloning template from: https://github.com/cloudflare/workers-graphql-server`,
 				);
 				expect(output).toContain(`template cloned and validated`);
 			},
 		);
 
-		test.skipIf(process.platform === "win32")(
+		// changed this to skip regardless as the template seems to have updated their dependencies
+		// which is causing package resolution issues in our CI
+		test({ experimental }).skip(
+			"Cloning remote template that uses wrangler.json",
+			async ({ logStream, project }) => {
+				const { output } = await runC3(
+					[
+						project.path,
+						"--template=cloudflare/templates/multiplayer-globe-template",
+						"--no-deploy",
+						"--git=false",
+					],
+					[],
+					logStream,
+				);
+
+				expect(output).toContain(
+					`repository cloudflare/templates/multiplayer-globe-template`,
+				);
+				expect(output).toContain(
+					`Cloning template from: cloudflare/templates/multiplayer-globe-template`,
+				);
+				expect(output).toContain(`template cloned and validated`);
+				// the template fails between these two assertions. however, the
+				// underlying issue appears to be with the packages pinned in
+				// the template - not whether or not the settings.json file is
+				// created
+				expect(readFileSync(`${project.path}/.vscode/settings.json`, "utf8"))
+					.toMatchInlineSnapshot(`
+					"{
+						"files.associations": {
+							"wrangler.json": "jsonc"
+						}
+					}"
+				`);
+			},
+		);
+
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Inferring the category, type and language if the type is `hello-world-python`",
-			async () => {
+			async ({ logStream, project }) => {
 				// The `hello-world-python` template is now the python variant of the `hello-world` template
 				const { output } = await runC3(
 					[
-						projectPath,
+						project.path,
 						"--type=hello-world-python",
 						"--no-deploy",
 						"--git=false",
@@ -219,25 +270,25 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 					logStream,
 				);
 
-				expect(projectPath).toExist();
+				expect(project.path).toExist();
 				expect(output).toContain(`category Hello World example`);
 				expect(output).toContain(`type Hello World Worker`);
 				expect(output).toContain(`lang Python`);
 			},
 		);
 
-		test.skipIf(process.platform === "win32")(
+		test({ experimental }).skipIf(process.platform === "win32")(
 			"Selecting template by description",
-			async () => {
+			async ({ logStream, project }) => {
 				const { output } = await runC3(
-					[projectPath, "--no-deploy", "--git=false"],
+					[project.path, "--no-deploy", "--git=false"],
 					[
 						{
 							matcher: /What would you like to start with\?/,
 							input: {
 								type: "select",
-								searchBy: "description",
-								target:
+								target: "Application Starter",
+								assertDescriptionText:
 									"Select from a range of starter applications using various Cloudflare products",
 							},
 						},
@@ -245,17 +296,129 @@ describe.skipIf(frameworkToTest || isQuarantineMode())(
 							matcher: /Which template would you like to use\?/,
 							input: {
 								type: "select",
-								searchBy: "description",
-								target: "Get started building a basic API on Workers",
+								target: "API starter (OpenAPI compliant)",
+								assertDescriptionText:
+									"Get started building a basic API on Workers",
 							},
 						},
 					],
 					logStream,
 				);
 
-				expect(projectPath).toExist();
-				expect(output).toContain(`category Demo application`);
+				expect(project.path).toExist();
+				expect(output).toContain(`category Application Starter`);
 				expect(output).toContain(`type API starter (OpenAPI compliant)`);
+			},
+		);
+
+		test({ experimental }).skipIf(process.platform === "win32")(
+			"Going back and forth between the category, type, framework and lang prompts",
+			async ({ logStream, project }) => {
+				const testProjectPath = "/test-project-path";
+				const { output } = await runC3(
+					[testProjectPath, "--git=false", "--no-deploy"],
+					[
+						{
+							matcher: /What would you like to start with\?/,
+							input: {
+								type: "select",
+								target: "Go back",
+							},
+						},
+						{
+							matcher:
+								/In which directory do you want to create your application/,
+							input: [project.path, keys.enter],
+						},
+						{
+							matcher: /What would you like to start with\?/,
+							input: {
+								type: "select",
+								target: "Application Starter",
+							},
+						},
+						{
+							matcher: /Which template would you like to use\?/,
+							input: {
+								type: "select",
+								target: "Queue consumer & producer Worker",
+							},
+						},
+						{
+							matcher: /Which language do you want to use\?/,
+							input: {
+								type: "select",
+								target: "Go back",
+							},
+						},
+						{
+							matcher: /Which template would you like to use\?/,
+							input: {
+								type: "select",
+								target: "Go back",
+								assertDefaultSelection: "Queue consumer & producer Worker",
+							},
+						},
+						{
+							matcher: /What would you like to start with\?/,
+							input: {
+								type: "select",
+								target: "Framework Starter",
+								assertDefaultSelection: "Application Starter",
+							},
+						},
+						{
+							matcher: /Which development framework do you want to use\?/,
+							input: {
+								type: "select",
+								target: "Go back",
+							},
+						},
+						{
+							matcher: /What would you like to start with\?/,
+							input: {
+								type: "select",
+								target: "Hello World example",
+								assertDefaultSelection: "Framework Starter",
+							},
+						},
+						{
+							matcher: /Which template would you like to use\?/,
+							input: {
+								type: "select",
+								target: "Hello World Worker Using Durable Objects",
+							},
+						},
+						{
+							matcher: /Which language do you want to use\?/,
+							input: {
+								type: "select",
+								target: "Go back",
+							},
+						},
+						{
+							matcher: /Which template would you like to use\?/,
+							input: {
+								type: "select",
+								target: "Hello World Worker",
+								assertDefaultSelection:
+									"Hello World Worker Using Durable Objects",
+							},
+						},
+						{
+							matcher: /Which language do you want to use\?/,
+							input: {
+								type: "select",
+								target: "JavaScript",
+							},
+						},
+					],
+					logStream,
+				);
+
+				expect(project.path).toExist();
+				expect(output).toContain(`type Hello World Worker`);
+				expect(output).toContain(`lang JavaScript`);
 			},
 		);
 	},

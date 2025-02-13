@@ -40,7 +40,7 @@ function getLoggerLevel(): LoggerLevel {
 		const expected = Object.keys(LOGGER_LEVELS)
 			.map((level) => `"${level}"`)
 			.join(" | ");
-		console.warn(
+		logger.once.warn(
 			`Unrecognised WRANGLER_LOG value ${JSON.stringify(
 				fromEnv
 			)}, expected ${expected}, defaulting to "log"...`
@@ -54,7 +54,21 @@ export type TableRow<Keys extends string> = Record<Keys, string>;
 export class Logger {
 	constructor() {}
 
-	loggerLevel = getLoggerLevel();
+	private overrideLoggerLevel?: LoggerLevel;
+	private onceHistory = new Set<string>();
+
+	get loggerLevel() {
+		return this.overrideLoggerLevel ?? getLoggerLevel();
+	}
+
+	set loggerLevel(val) {
+		this.overrideLoggerLevel = val;
+	}
+
+	resetLoggerLevel() {
+		this.overrideLoggerLevel = undefined;
+	}
+
 	columns = process.stdout.columns;
 
 	debug = (...args: unknown[]) => this.doLog("debug", args);
@@ -96,6 +110,28 @@ export class Logger {
 		Logger.#beforeLogHook?.();
 		(console[method] as (...args: unknown[]) => unknown).apply(console, args);
 		Logger.#afterLogHook?.();
+	}
+
+	get once() {
+		return {
+			info: (...args: unknown[]) => this.doLogOnce("info", args),
+			log: (...args: unknown[]) => this.doLogOnce("log", args),
+			warn: (...args: unknown[]) => this.doLogOnce("warn", args),
+			error: (...args: unknown[]) => this.doLogOnce("error", args),
+		};
+	}
+
+	clearHistory() {
+		this.onceHistory.clear();
+	}
+
+	doLogOnce(messageLevel: Exclude<LoggerLevel, "none">, args: unknown[]) {
+		const cacheKey = `${messageLevel}: ${args.join(" ")}`;
+
+		if (!this.onceHistory.has(cacheKey)) {
+			this.onceHistory.add(cacheKey);
+			this.doLog(messageLevel, args);
+		}
 	}
 
 	private doLog(messageLevel: Exclude<LoggerLevel, "none">, args: unknown[]) {
@@ -161,7 +197,7 @@ export const logger = new Logger();
 export function logBuildWarnings(warnings: Message[]) {
 	const logs = formatMessagesSync(warnings, { kind: "warning", color: true });
 	for (const log of logs) {
-		console.warn(log);
+		logger.console("warn", log);
 	}
 }
 
@@ -170,9 +206,13 @@ export function logBuildWarnings(warnings: Message[]) {
  * style esbuild would.
  */
 export function logBuildFailure(errors: Message[], warnings: Message[]) {
-	const logs = formatMessagesSync(errors, { kind: "error", color: true });
-	for (const log of logs) {
-		console.error(log);
+	if (errors.length > 0) {
+		const logs = formatMessagesSync(errors, { kind: "error", color: true });
+		const errorStr = errors.length > 1 ? "errors" : "error";
+		logger.error(
+			`Build failed with ${errors.length} ${errorStr}:\n` + logs.join("\n")
+		);
 	}
+
 	logBuildWarnings(warnings);
 }

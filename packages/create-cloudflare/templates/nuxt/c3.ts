@@ -24,7 +24,7 @@ const generate = async (ctx: C3Context) => {
 		gitFlag,
 	]);
 
-	writeFile("./.node-version", "17");
+	writeFile("./.node-version", "18");
 
 	logRaw(""); // newline
 };
@@ -112,6 +112,7 @@ const updateNuxtConfig = () => {
 const config: TemplateConfig = {
 	configVersion: 1,
 	id: "nuxt",
+	frameworkCli: "nuxi",
 	platform: "pages",
 	displayName: "Nuxt",
 	copyFiles: {

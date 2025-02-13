@@ -10,7 +10,7 @@ export interface Environment
 	extends EnvironmentInheritable,
 		EnvironmentNonInheritable {}
 
-export type SimpleRoute = string;
+type SimpleRoute = string;
 export type ZoneIdRoute = {
 	pattern: string;
 	zone_id: string;
@@ -32,8 +32,56 @@ export type Route =
  * Configuration in wrangler for Cloudchamber
  */
 export type CloudchamberConfig = {
+	image?: string;
+	location?: string;
 	vcpu?: number;
 	memory?: string;
+	ipv4?: boolean;
+};
+
+/**
+ * Configuration for a container application
+ */
+export type ContainerApp = {
+	// TODO: fill out the entire type
+
+	/* Name of the application*/
+	name: string;
+	/* Number of application instances */
+	instances: number;
+	/* The scheduling policy of the application, default is regional */
+	scheduling_policy?: "regional" | "moon";
+	/* Configuration of the container */
+	configuration: {
+		image: string;
+		labels?: { name: string; value: string }[];
+		secrets?: { name: string; type: "env"; secret: string }[];
+	};
+	/* Scheduling constraints */
+	constraints?: {
+		regions?: string[];
+		cities?: string[];
+		tier?: number;
+	};
+};
+
+/**
+ * Configuration in wrangler for Durable Object Migrations
+ */
+export type DurableObjectMigration = {
+	/** A unique identifier for this migration. */
+	tag: string;
+	/** The new Durable Objects being defined. */
+	new_classes?: string[];
+	/** The new SQLite Durable Objects being defined. */
+	new_sqlite_classes?: string[];
+	/** The Durable Objects being renamed. */
+	renamed_classes?: {
+		from: string;
+		to: string;
+	}[];
+	/** The Durable Objects being removed. */
+	deleted_classes?: string[];
 };
 
 /**
@@ -71,11 +119,11 @@ interface EnvironmentInheritable {
 
 	/**
 	 * A list of flags that enable features from upcoming features of
-	 * the Workers runtime, usually used together with compatibility_flags.
+	 * the Workers runtime, usually used together with compatibility_date.
 	 *
-	 * More details at https://developers.cloudflare.com/workers/platform/compatibility-dates
+	 * More details at https://developers.cloudflare.com/workers/platform/compatibility-flags
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @inheritable
 	 */
 	compatibility_flags: string[];
@@ -114,16 +162,28 @@ interface EnvironmentInheritable {
 	 */
 	base_dir: string | undefined;
 
+	// Carmen according to our tests the default is undefined
+	// warning: you must force "workers_dev: true" in tests to match expected behavior
 	/**
 	 * Whether we use <name>.<subdomain>.workers.dev to
 	 * test and deploy your Worker.
 	 *
-	 * // Carmen according to our tests the default is undefined
-	 * @default `true` (This is a breaking change from Wrangler v1)
+	 *
+	 * @default true
 	 * @breaking
 	 * @inheritable
 	 */
+
 	workers_dev: boolean | undefined;
+
+	/**
+	 * Whether we use <version>-<name>.<subdomain>.workers.dev to
+	 * serve Preview URLs for your Worker.
+	 *
+	 * @default true
+	 * @inheritable
+	 */
+	preview_urls: boolean | undefined;
 
 	/**
 	 * A list of routes that your Worker should be published to.
@@ -156,7 +216,7 @@ interface EnvironmentInheritable {
 	/**
 	 * The function to use to replace jsx syntax.
 	 *
-	 * @default `"React.createElement"`
+	 * @default "React.createElement"
 	 * @inheritable
 	 */
 	jsx_factory: string;
@@ -164,7 +224,7 @@ interface EnvironmentInheritable {
 	/**
 	 * The function to use to replace jsx fragment syntax.
 	 *
-	 * @default `"React.Fragment"`
+	 * @default "React.Fragment"
 	 * @inheritable
 	 */
 	jsx_fragment: string;
@@ -179,19 +239,7 @@ interface EnvironmentInheritable {
 	 * @default []
 	 * @inheritable
 	 */
-	migrations: {
-		/** A unique identifier for this migration. */
-		tag: string;
-		/** The new Durable Objects being defined. */
-		new_classes?: string[];
-		/** The Durable Objects being renamed. */
-		renamed_classes?: {
-			from: string;
-			to: string;
-		}[];
-		/** The Durable Objects being removed. */
-		deleted_classes?: string[];
-	}[];
+	migrations: DurableObjectMigration[];
 
 	/**
 	 * "Cron" definitions to trigger a Worker's "scheduled" function.
@@ -200,7 +248,7 @@ interface EnvironmentInheritable {
 	 *
 	 * More details here https://developers.cloudflare.com/workers/platform/cron-triggers
 	 *
-	 * @default `{crons:[]}`
+	 * @default {crons:[]}
 	 * @inheritable
 	 */
 	triggers: { crons: string[] };
@@ -294,7 +342,7 @@ interface EnvironmentInheritable {
 	/**
 	 * List of bindings that you will send to logfwdr
 	 *
-	 * @default `{bindings:[]}`
+	 * @default {bindings:[]}
 	 * @inheritable
 	 */
 	logfwdr: {
@@ -331,14 +379,23 @@ interface EnvironmentInheritable {
 	 *
 	 * @inheritable
 	 */
-	placement: { mode: "off" | "smart" } | undefined;
+	placement: { mode: "off" | "smart"; hint?: string } | undefined;
 
 	/**
 	 * Specify the directory of static assets to deploy/serve
 	 *
+	 * More details at https://developers.cloudflare.com/workers/frameworks/
+	 *
 	 * @inheritable
 	 */
-	experimental_assets: ExperimentalAssets | undefined;
+	assets: Assets | undefined;
+
+	/**
+	 * Specify the observability behavior of the Worker.
+	 *
+	 * @inheritable
+	 */
+	observability: Observability | undefined;
 }
 
 export type DurableObjectBindings = {
@@ -351,6 +408,17 @@ export type DurableObjectBindings = {
 	/** The service environment of the script_name to bind to */
 	environment?: string;
 }[];
+
+export type WorkflowBinding = {
+	/** The name of the binding used to refer to the Workflow */
+	binding: string;
+	/** The name of the Workflow */
+	name: string;
+	/** The exported class name of the Workflow */
+	class_name: string;
+	/** The script where the Workflow is defined (if it's external to this Worker) */
+	script_name?: string;
+};
 
 /**
  * The `EnvironmentNonInheritable` interface declares all the configuration fields for an environment
@@ -366,7 +434,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	define: Record<string, string>;
@@ -376,7 +444,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	vars: Record<string, string | Json>;
@@ -390,7 +458,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{bindings:[]}`
+	 * @default {bindings:[]}
 	 * @nonInheritable
 	 */
 	durable_objects: {
@@ -398,15 +466,42 @@ export interface EnvironmentNonInheritable {
 	};
 
 	/**
+	 * A list of workflows that your Worker should be bound to.
+	 *
+	 * NOTE: This field is not automatically inherited from the top level environment,
+	 * and so must be specified in every named environment.
+	 *
+	 * @default []
+	 * @nonInheritable
+	 */
+	workflows: WorkflowBinding[];
+
+	/**
 	 * Cloudchamber configuration
 	 *
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	cloudchamber: CloudchamberConfig;
+
+	/**
+	 * Container related configuration
+	 */
+	containers: {
+		/**
+		 * Container app configuration
+		 *
+		 * NOTE: This field is not automatically inherited from the top level environment,
+		 * and so must be specified in every named environment.
+		 *
+		 * @default {}
+		 * @nonInheritable
+		 */
+		app: ContainerApp[];
+	};
 
 	/**
 	 * These specify any Workers KV Namespaces you want to
@@ -418,14 +513,14 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	kv_namespaces: {
 		/** The binding name used to refer to the KV Namespace */
 		binding: string;
 		/** The ID of the KV namespace */
-		id: string;
+		id?: string;
 		/** The ID of the KV namespace used during `wrangler dev` */
 		preview_id?: string;
 	}[];
@@ -436,7 +531,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	send_email: {
@@ -454,7 +549,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{consumers:[],producers:[]}`
+	 * @default {consumers:[],producers:[]}
 	 * @nonInheritable
 	 */
 	queues: {
@@ -507,14 +602,14 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	r2_buckets: {
 		/** The binding name used to refer to the R2 bucket in the Worker. */
 		binding: string;
 		/** The name of this R2 bucket at the edge. */
-		bucket_name: string;
+		bucket_name?: string;
 		/** The preview name of this R2 bucket at the edge. */
 		preview_bucket_name?: string;
 		/** The jurisdiction that the bucket exists in. Default if not present. */
@@ -527,16 +622,16 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	d1_databases: {
 		/** The binding name used to refer to the D1 database in the Worker. */
 		binding: string;
 		/** The name of this D1 database. */
-		database_name: string;
+		database_name?: string;
 		/** The UUID of this D1 database (not required). */
-		database_id: string;
+		database_id?: string;
 		/** The UUID of this D1 database for Wrangler Dev (if specified). */
 		preview_database_id?: string;
 		/** The name of the migrations table for this D1 database (defaults to 'd1_migrations'). */
@@ -553,7 +648,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	vectorize: {
@@ -569,7 +664,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	hyperdrive: {
@@ -587,7 +682,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	services:
@@ -609,7 +704,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	analytics_engine_datasets: {
@@ -625,7 +720,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	browser:
@@ -640,13 +735,28 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	ai:
 		| {
 				binding: string;
 				staging?: boolean;
+		  }
+		| undefined;
+
+	/**
+	 * Binding to Cloudflare Images
+	 *
+	 * NOTE: This field is not automatically inherited from the top level environment,
+	 * and so must be specified in every named environment.
+	 *
+	 * @default {}
+	 * @nonInheritable
+	 */
+	images:
+		| {
+				binding: string;
 		  }
 		| undefined;
 
@@ -665,7 +775,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `{}`
+	 * @default {}
 	 * @nonInheritable
 	 */
 	unsafe: {
@@ -710,7 +820,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	mtls_certificates: {
@@ -726,7 +836,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	tail_consumers?: TailConsumer[];
@@ -737,7 +847,7 @@ export interface EnvironmentNonInheritable {
 	 * NOTE: This field is not automatically inherited from the top level environment,
 	 * and so must be specified in every named environment.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @nonInheritable
 	 */
 	dispatch_namespaces: {
@@ -747,6 +857,23 @@ export interface EnvironmentNonInheritable {
 		namespace: string;
 		/** Details about the outbound Worker which will handle outbound requests from your namespace */
 		outbound?: DispatchNamespaceOutbound;
+	}[];
+
+	/**
+	 * Specifies list of Pipelines bound to this Worker environment
+	 *
+	 * NOTE: This field is not automatically inherited from the top level environment,
+	 * and so must be specified in every named environment.
+	 *
+	 * @default []
+	 * @nonInheritable
+	 */
+	pipelines: {
+		/** The binding name used to refer to the bound service. */
+		binding: string;
+
+		/** Name of the Pipeline to bind */
+		pipeline: string;
 	}[];
 }
 
@@ -772,7 +899,7 @@ interface EnvironmentDeprecated {
 	/**
 	 * A list of services that your Worker should be bound to.
 	 *
-	 * @default `[]`
+	 * @default []
 	 * @deprecated DO NOT USE. We'd added this to test the new service binding system, but the proper way to test experimental features is to use `unsafe.bindings` configuration.
 	 */
 	experimental_services?: {
@@ -798,9 +925,9 @@ export interface DeprecatedUpload {
 
 	/**
 	 * The directory you wish to upload your Worker from,
-	 * relative to the wrangler.toml file.
+	 * relative to the Wrangler configuration file.
 	 *
-	 * Defaults to the directory containing the wrangler.toml file.
+	 * Defaults to the directory containing the Wrangler configuration file.
 	 *
 	 * @deprecated
 	 */
@@ -870,8 +997,39 @@ export interface UserLimits {
 	cpu_ms: number;
 }
 
-export type ExperimentalAssets = {
+export type Assets = {
 	/** Absolute path to assets directory */
-	directory: string;
+	directory?: string;
+	/** Name of `env` binding property in the User Worker. */
 	binding?: string;
+	/** How to handle HTML requests. */
+	html_handling?:
+		| "auto-trailing-slash"
+		| "force-trailing-slash"
+		| "drop-trailing-slash"
+		| "none";
+	/** How to handle requests that do not match an asset. */
+	not_found_handling?: "single-page-application" | "404-page" | "none";
+	/**
+	 * If true, route every request to the User Worker, whether or not it matches an asset.
+	 * If false, then respond to requests that match an asset with that asset directly.
+	 * */
+	run_worker_first?: boolean;
+
+	/** Deprecated; Inverse of run_worker_first. Should use run_worker_first instead */
+	experimental_serve_directly?: boolean;
 };
+
+export interface Observability {
+	/** If observability is enabled for this Worker */
+	enabled?: boolean;
+	/** The sampling rate */
+	head_sampling_rate?: number;
+	logs?: {
+		enabled?: boolean;
+		/** The sampling rate */
+		head_sampling_rate?: number;
+		/** Set to false to disable invocation logs */
+		invocation_logs?: boolean;
+	};
+}

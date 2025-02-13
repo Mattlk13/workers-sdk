@@ -8,6 +8,7 @@ import util from "node:util";
 import * as cjsModuleLexer from "cjs-module-lexer";
 import { buildSync } from "esbuild";
 import { ModuleRuleTypeSchema, Response } from "miniflare";
+import { workerdBuiltinModules } from "../shared/builtin-modules";
 import { isFileNotFoundError } from "./helpers";
 import type { ModuleRuleType, Request, Worker_Module } from "miniflare";
 import type { ViteDevServer } from "vite";
@@ -41,6 +42,19 @@ function trimSuffix(suffix: string, value: string) {
 	return value.substring(0, value.length - suffix.length);
 }
 
+/**
+ * When pre-bundling is enabled, Vite will add a hash to the end of the file path
+ * e.g. `/node_modules/.vite/deps/my-dep.js?v=f3sf2ebd`
+ *
+ * @see https://vite.dev/guide/features.html#npm-dependency-resolving-and-pre-bundling
+ * @see https://github.com/cloudflare/workers-sdk/pull/5673
+ */
+const versionHashRegExp = /\?v=[0-9a-f]+$/;
+
+function trimViteVersionHash(filePath: string) {
+	return filePath.replace(versionHashRegExp, "");
+}
+
 // RegExp for path suffix to force loading module as specific type.
 // (e.g. `/path/to/module.wasm?mf_vitest_force=CompiledWasm`)
 // This suffix will be added by the pool when fetching a module that matches a
@@ -53,12 +67,6 @@ function trimSuffix(suffix: string, value: string) {
 const forceModuleTypeRegexp = new RegExp(
 	`\\?mf_vitest_force=(${ModuleRuleTypeSchema.options.join("|")})$`
 );
-
-// Node.js built-in modules provided by `workerd`
-export const workerdBuiltinModules = new Set([
-	...VITEST_POOL_WORKERS_DEFINE_BUILTIN_MODULES,
-	"__STATIC_CONTENT_MANIFEST",
-]);
 
 // `chai` contains circular `require()`s which aren't supported by `workerd`
 // TODO(someday): support circular `require()` in `workerd`
@@ -305,13 +313,26 @@ async function viteResolve(
 		if (workerdBuiltinModules.has(id)) {
 			return `/${id}`;
 		}
+		if (id.startsWith("node:")) {
+			throw new Error("Not found");
+		}
+
 		id = `node:${id}`;
 		if (workerdBuiltinModules.has(id)) {
 			return `/${id}`;
 		}
-		throw new Error("Not found");
+
+		// If we get this far, we have something that:
+		//  - looks like a built-in node module but wasn't imported with a `node:` prefix
+		//  - and isn't provided by workerd natively
+		// In that case, _try_ and load the identifier with a `node:` prefix.
+		// This will potentially load one of the Node.js polyfills provided by `vitest-pool-workers`
+		// Note: User imports should never get here! This is only meant to cater for Vitest internals
+		//       (Specifically, the "tinyrainbow" module imports `node:tty` as `tty`)
+		return id;
 	}
-	return resolved.id;
+
+	return trimViteVersionHash(resolved.id);
 }
 
 type ResolveMethod = "import" | "require";
@@ -553,6 +574,11 @@ export async function handleModuleFallbackRequest(
 		return await load(vite, logBase, method, target, specifier, filePath);
 	} catch (e) {
 		debuglog(logBase, "error:", e);
+		console.error(
+			`[vitest-pool-workers] Failed to ${method} ${JSON.stringify(target)} from ${JSON.stringify(referrer)}.`,
+			"To resolve this, try bundling the relevant dependency with Vite.",
+			"For more details, refer to https://developers.cloudflare.com/workers/testing/vitest-integration/known-issues/#module-resolution"
+		);
 	}
 
 	return new Response(null, { status: 404 });

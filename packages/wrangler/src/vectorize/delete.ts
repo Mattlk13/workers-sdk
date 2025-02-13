@@ -2,7 +2,7 @@ import { readConfig } from "../config";
 import { confirm } from "../dialogs";
 import { logger } from "../logger";
 import { deleteIndex } from "./client";
-import { deprecatedV1DefaultFlag, vectorizeBetaWarning } from "./common";
+import { deprecatedV1DefaultFlag, vectorizeGABanner } from "./common";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
@@ -26,13 +26,13 @@ export function options(yargs: CommonYargsArgv) {
 			default: deprecatedV1DefaultFlag,
 			describe: "Delete a deprecated Vectorize V1 index.",
 		})
-		.epilogue(vectorizeBetaWarning);
+		.epilogue(vectorizeGABanner);
 }
 
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	logger.log(`Deleting Vectorize index ${args.name}`);
 	if (!args.force) {

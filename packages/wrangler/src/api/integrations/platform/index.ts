@@ -1,10 +1,12 @@
 import { kCurrentWorker, Miniflare } from "miniflare";
+import { getAssetsOptions } from "../../../assets";
 import { readConfig } from "../../../config";
 import { DEFAULT_MODULE_RULES } from "../../../deployment-bundle/rules";
 import { getBindings } from "../../../dev";
 import { getBoundRegisteredWorkers } from "../../../dev-registry";
-import { getVarsForDev } from "../../../dev/dev-vars";
+import { getClassNamesWhichUseSQLite } from "../../../dev/class-names-sqlite";
 import {
+	buildAssetOptions,
 	buildMiniflareBindingOptions,
 	buildSitesOptions,
 } from "../../../dev/miniflare";
@@ -13,9 +15,16 @@ import { getLegacyAssetPaths, getSiteAssetPaths } from "../../../sites";
 import { CacheStorage } from "./caches";
 import { ExecutionContext } from "./executionContext";
 import { getServiceBindings } from "./services";
-import type { Config } from "../../../config";
+import type { Config, RawConfig, RawEnvironment } from "../../../config";
 import type { IncomingRequestCfProperties } from "@cloudflare/workers-types/experimental";
 import type { MiniflareOptions, ModuleRule, WorkerOptions } from "miniflare";
+
+export { readConfig as unstable_readConfig };
+export type {
+	Config as Unstable_Config,
+	RawConfig as Unstable_RawConfig,
+	RawEnvironment as Unstable_RawEnvironment,
+};
 
 /**
  * Options for the `getPlatformProxy` utility
@@ -28,31 +37,18 @@ export type GetPlatformProxyOptions = {
 	/**
 	 * The path to the config file to use.
 	 * If no path is specified the default behavior is to search from the
-	 * current directory up the filesystem for a `wrangler.toml` to use.
+	 * current directory up the filesystem for a Wrangler configuration file to use.
 	 *
 	 * Note: this field is optional but if a path is specified it must
 	 *       point to a valid file on the filesystem
 	 */
 	configPath?: string;
 	/**
-	 * Flag to indicate the utility to read a json config file (`wrangler.json`/`wrangler.jsonc`)
-	 * instead of the toml one (`wrangler.toml`)
-	 *
-	 * Note: this feature is experimental
-	 */
-	experimentalJsonConfig?: boolean;
-	/**
 	 * Indicates if and where to persist the bindings data, if not present or `true` it defaults to the same location
 	 * used by wrangler v3: `.wrangler/state/v3` (so that the same data can be easily used by the caller and wrangler).
 	 * If `false` is specified no data is persisted on the filesystem.
 	 */
 	persist?: boolean | { path: string };
-	/**
-	 * Use the experimental file-based dev registry for service discovery
-	 *
-	 * Note: this feature is experimental
-	 */
-	experimentalRegistry?: boolean;
 };
 
 /**
@@ -85,7 +81,7 @@ export type PlatformProxy<
 };
 
 /**
- * By reading from a `wrangler.toml` file this function generates proxy objects that can be
+ * By reading from a Wrangler configuration file this function generates proxy objects that can be
  * used to simulate the interaction with the Cloudflare platform during local development
  * in a Node.js environment
  *
@@ -100,16 +96,15 @@ export async function getPlatformProxy<
 ): Promise<PlatformProxy<Env, CfProperties>> {
 	const env = options.environment;
 
-	const rawConfig = readConfig(options.configPath, {
-		experimentalJsonConfig: options.experimentalJsonConfig,
+	const rawConfig = readConfig({
+		config: options.configPath,
 		env,
 	});
 
 	const miniflareOptions = await run(
 		{
-			FILE_BASED_REGISTRY: Boolean(options.experimentalRegistry),
-			DEV_ENV: false,
-			JSON_CONFIG_FILE: Boolean(options.experimentalJsonConfig),
+			MULTIWORKER: false,
+			RESOURCES_PROVISION: false,
 		},
 		() => getMiniflareOptionsFromConfig(rawConfig, env, options)
 	);
@@ -122,16 +117,11 @@ export async function getPlatformProxy<
 
 	const bindings: Env = await mf.getBindings();
 
-	const vars = getVarsForDev(rawConfig, env);
-
 	const cf = await mf.getCf();
 	deepFreeze(cf);
 
 	return {
-		env: {
-			...vars,
-			...bindings,
-		},
+		env: bindings,
 		cf: cf as CfProperties,
 		ctx: new ExecutionContext(),
 		caches: new CacheStorage(),
@@ -159,6 +149,8 @@ async function getMiniflareOptionsFromConfig(
 		queueConsumers: undefined,
 		services: rawConfig.services,
 		serviceBindings: {},
+		migrations: rawConfig.migrations,
+		imagesLocalMode: false,
 	});
 
 	const persistOptions = getMiniflarePersistOptions(options.persist);
@@ -194,7 +186,11 @@ function getMiniflarePersistOptions(
 	persist: GetPlatformProxyOptions["persist"]
 ): Pick<
 	MiniflareOptions,
-	"kvPersist" | "durableObjectsPersist" | "r2Persist" | "d1Persist"
+	| "kvPersist"
+	| "durableObjectsPersist"
+	| "r2Persist"
+	| "d1Persist"
+	| "workflowsPersist"
 > {
 	if (persist === false) {
 		// the user explicitly asked for no persistance
@@ -203,6 +199,7 @@ function getMiniflarePersistOptions(
 			durableObjectsPersist: false,
 			r2Persist: false,
 			d1Persist: false,
+			workflowsPersist: false,
 		};
 	}
 
@@ -216,6 +213,7 @@ function getMiniflarePersistOptions(
 		durableObjectsPersist: `${persistPath}/do`,
 		r2Persist: `${persistPath}/r2`,
 		d1Persist: `${persistPath}/d1`,
+		workflowsPersist: `${persistPath}/workflows`,
 	};
 }
 
@@ -235,18 +233,28 @@ export type SourcelessWorkerOptions = Omit<
 	"script" | "scriptPath" | "modules" | "modulesRoot"
 > & { modulesRules?: ModuleRule[] };
 
-export function unstable_getMiniflareWorkerOptions(
-	configPath: string,
-	env?: string
-): {
+export interface Unstable_MiniflareWorkerOptions {
 	workerOptions: SourcelessWorkerOptions;
 	define: Record<string, string>;
 	main?: string;
-} {
-	const config = readConfig(configPath, {
-		experimentalJsonConfig: true,
-		env,
-	});
+}
+
+export function unstable_getMiniflareWorkerOptions(
+	configPath: string,
+	env?: string
+): Unstable_MiniflareWorkerOptions;
+export function unstable_getMiniflareWorkerOptions(
+	config: Config,
+	env?: string
+): Unstable_MiniflareWorkerOptions;
+export function unstable_getMiniflareWorkerOptions(
+	configOrConfigPath: string | Config,
+	env?: string
+): Unstable_MiniflareWorkerOptions {
+	const config =
+		typeof configOrConfigPath === "string"
+			? readConfig({ config: configOrConfigPath, env })
+			: configOrConfigPath;
 
 	const modulesRules: ModuleRule[] = config.rules
 		.concat(DEFAULT_MODULE_RULES)
@@ -264,6 +272,8 @@ export function unstable_getMiniflareWorkerOptions(
 		queueConsumers: config.queues.consumers,
 		services: [],
 		serviceBindings: {},
+		migrations: config.migrations,
+		imagesLocalMode: false,
 	});
 
 	// This function is currently only exported for the Workers Vitest pool.
@@ -282,11 +292,24 @@ export function unstable_getMiniflareWorkerOptions(
 		);
 	}
 	if (bindings.durable_objects !== undefined) {
+		type DurableObjectDefinition = NonNullable<
+			typeof bindingOptions.durableObjects
+		>[string];
+
+		const classNameToUseSQLite = getClassNamesWhichUseSQLite(config.migrations);
+
 		bindingOptions.durableObjects = Object.fromEntries(
-			bindings.durable_objects.bindings.map((binding) => [
-				binding.name,
-				{ className: binding.class_name, scriptName: binding.script_name },
-			])
+			bindings.durable_objects.bindings.map((binding) => {
+				const useSQLite = classNameToUseSQLite.get(binding.class_name);
+				return [
+					binding.name,
+					{
+						className: binding.class_name,
+						scriptName: binding.script_name,
+						useSQLite,
+					} satisfies DurableObjectDefinition,
+				];
+			})
 		);
 	}
 
@@ -294,6 +317,10 @@ export function unstable_getMiniflareWorkerOptions(
 		? getLegacyAssetPaths(config, undefined)
 		: getSiteAssetPaths(config);
 	const sitesOptions = buildSitesOptions({ legacyAssetPaths });
+	const processedAssetOptions = getAssetsOptions({ assets: undefined }, config);
+	const assetOptions = processedAssetOptions
+		? buildAssetOptions({ assets: processedAssetOptions })
+		: {};
 
 	const workerOptions: SourcelessWorkerOptions = {
 		compatibilityDate: config.compatibility_date,
@@ -302,6 +329,7 @@ export function unstable_getMiniflareWorkerOptions(
 
 		...bindingOptions,
 		...sitesOptions,
+		...assetOptions,
 	};
 
 	return { workerOptions, define: config.define, main: config.main };

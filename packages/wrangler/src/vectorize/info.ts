@@ -1,7 +1,7 @@
 import { readConfig } from "../config";
 import { logger } from "../logger";
 import { indexInfo } from "./client";
-import { vectorizeBetaWarning } from "./common";
+import { vectorizeGABanner } from "./common";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
@@ -19,13 +19,13 @@ export function options(yargs: CommonYargsArgv) {
 			type: "boolean",
 			default: false,
 		})
-		.epilogue(vectorizeBetaWarning);
+		.epilogue(vectorizeGABanner);
 }
 
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	logger.log(`📋 Fetching index info...`);
 	const info = await indexInfo(config, args.name);

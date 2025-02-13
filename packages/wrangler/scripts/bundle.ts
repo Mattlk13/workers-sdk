@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import * as esbuild from "esbuild";
 import { EXTERNAL_DEPENDENCIES } from "./deps";
@@ -36,6 +36,7 @@ async function buildMain(flags: BuildFlags = {}) {
 		outdir,
 		platform: "node",
 		format: "cjs",
+		metafile: true,
 		external: EXTERNAL_DEPENDENCIES,
 		sourcemap: process.env.SOURCEMAPS !== "false",
 		inject: [path.join(__dirname, "../import_meta_url.js")],
@@ -45,9 +46,9 @@ async function buildMain(flags: BuildFlags = {}) {
 			__RELATIVE_PACKAGE_PATH__,
 			"import.meta.url": "import_meta_url",
 			"process.env.NODE_ENV": `'${process.env.NODE_ENV || "production"}'`,
-			...(process.env.SPARROW_SOURCE_KEY
-				? { SPARROW_SOURCE_KEY: `"${process.env.SPARROW_SOURCE_KEY}"` }
-				: {}),
+			"process.env.SPARROW_SOURCE_KEY": JSON.stringify(
+				process.env.SPARROW_SOURCE_KEY ?? ""
+			),
 			...(process.env.ALGOLIA_APP_ID
 				? { ALGOLIA_APP_ID: `"${process.env.ALGOLIA_APP_ID}"` }
 				: {}),
@@ -65,20 +66,9 @@ async function buildMain(flags: BuildFlags = {}) {
 		const ctx = await esbuild.context(options);
 		await ctx.watch();
 	} else {
-		await esbuild.build(options);
+		const res = await esbuild.build(options);
+		writeFileSync("metafile.json", JSON.stringify(res.metafile));
 	}
-
-	// Copy `yoga-layout` `.wasm` file
-	const yogaLayoutEntrypoint = require.resolve("yoga-layout");
-	const wasmSrc = path.resolve(
-		yogaLayoutEntrypoint,
-		"..",
-		"..",
-		"build",
-		"wasm-sync.wasm"
-	);
-	const wasmDst = path.resolve(outdir, "wasm-sync.wasm");
-	await fs.copyFile(wasmSrc, wasmDst);
 }
 
 const workersContexts = new Map<string, BuildContext>();

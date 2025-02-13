@@ -14,6 +14,12 @@ export function getDatabaseInfoFromConfig(
 			d1Database.database_id &&
 			(name === d1Database.database_name || name === d1Database.binding)
 		) {
+			if (!d1Database.database_name) {
+				throw new UserError(
+					`${name} bindings must have a "database_name" field`
+				);
+			}
+
 			return {
 				uuid: d1Database.database_id,
 				previewDatabaseUuid: d1Database.preview_database_id,
@@ -48,12 +54,12 @@ export const getDatabaseByNameOrBinding = async (
 	return matchingDB;
 };
 
-export const getDatabaseInfoFromId = async (
+export const getDatabaseInfoFromIdOrName = async (
 	accountId: string,
-	databaseId: string
+	databaseIdOrName: string
 ): Promise<DatabaseInfo> => {
 	return await fetchResult<DatabaseInfo>(
-		`/accounts/${accountId}/d1/database/${databaseId}`,
+		`/accounts/${accountId}/d1/database/${databaseIdOrName}`,
 		{
 			headers: {
 				"Content-Type": "application/json",

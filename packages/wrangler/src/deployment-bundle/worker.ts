@@ -1,8 +1,10 @@
-import type { Route } from "../config/environment";
+import type { Observability, Route } from "../config/environment";
+import type { INHERIT_SYMBOL } from "./bindings";
 import type {
 	WorkerMetadata,
 	WorkerMetadataBinding,
 } from "./create-worker-upload-form";
+import type { AssetConfig, RoutingConfig } from "@cloudflare/workers-shared";
 import type { Json } from "miniflare";
 
 /**
@@ -53,7 +55,7 @@ export interface CfModule {
 	 *   }
 	 * }
 	 */
-	content: string | Buffer;
+	content: string | Buffer<ArrayBuffer>;
 	/**
 	 * An optional sourcemap for this module if it's of a ESM or CJS type, this will only be present
 	 * if we're deploying with sourcemaps enabled. Since we copy extra modules that aren't bundled
@@ -80,7 +82,7 @@ export interface CfVars {
  */
 export interface CfKvNamespace {
 	binding: string;
-	id: string;
+	id?: string | typeof INHERIT_SYMBOL;
 }
 
 /**
@@ -97,7 +99,7 @@ export interface CfSendEmailBindings {
  */
 
 export interface CfWasmModuleBindings {
-	[key: string]: string | Uint8Array;
+	[key: string]: string | Uint8Array<ArrayBuffer>;
 }
 
 /**
@@ -126,6 +128,13 @@ export interface CfAIBinding {
 }
 
 /**
+ * A binding to Cloudflare Images
+ */
+export interface CfImagesBinding {
+	binding: string;
+}
+
+/**
  * A binding to the Worker Version's metadata
  */
 
@@ -138,7 +147,7 @@ export interface CfVersionMetadataBinding {
  */
 
 export interface CfDataBlobBindings {
-	[key: string]: string | Uint8Array;
+	[key: string]: string | Uint8Array<ArrayBuffer>;
 }
 
 /**
@@ -151,6 +160,13 @@ export interface CfDurableObject {
 	environment?: string;
 }
 
+export interface CfWorkflow {
+	name: string;
+	class_name: string;
+	binding: string;
+	script_name?: string;
+}
+
 export interface CfQueue {
 	binding: string;
 	queue_name: string;
@@ -159,15 +175,15 @@ export interface CfQueue {
 
 export interface CfR2Bucket {
 	binding: string;
-	bucket_name: string;
+	bucket_name?: string | typeof INHERIT_SYMBOL;
 	jurisdiction?: string;
 }
 
 // TODO: figure out if this is duplicated in packages/wrangler/src/config/environment.ts
 export interface CfD1Database {
 	binding: string;
-	database_id: string;
-	database_name: string;
+	database_id?: string | typeof INHERIT_SYMBOL;
+	database_name?: string;
 	preview_database_id?: string;
 	database_internal_env?: string;
 	migrations_table?: string;
@@ -221,6 +237,15 @@ export interface CfLogfwdrBinding {
 	destination: string;
 }
 
+export interface CfAssetsBinding {
+	binding: string;
+}
+
+export interface CfPipeline {
+	binding: string;
+	pipeline: string;
+}
+
 export interface CfUnsafeBinding {
 	name: string;
 	type: string;
@@ -251,6 +276,7 @@ export interface CfDurableObjectMigrations {
 	new_tag: string;
 	steps: {
 		new_classes?: string[];
+		new_sqlite_classes?: string[];
 		renamed_classes?: {
 			from: string;
 			to: string;
@@ -261,6 +287,7 @@ export interface CfDurableObjectMigrations {
 
 export interface CfPlacement {
 	mode: "smart";
+	hint?: string;
 }
 
 export interface CfTailConsumer {
@@ -272,11 +299,11 @@ export interface CfUserLimits {
 	cpu_ms?: number;
 }
 
-export interface CfExperimentalAssets {
+export interface CfAssets {
 	jwt: string;
-	staticAssetsOnly: boolean;
+	routingConfig: RoutingConfig;
+	assetConfig?: AssetConfig;
 }
-
 /**
  * Options for creating a `CfWorker`.
  */
@@ -308,9 +335,11 @@ export interface CfWorkerInit {
 		text_blobs: CfTextBlobBindings | undefined;
 		browser: CfBrowserBinding | undefined;
 		ai: CfAIBinding | undefined;
+		images: CfImagesBinding | undefined;
 		version_metadata: CfVersionMetadataBinding | undefined;
 		data_blobs: CfDataBlobBindings | undefined;
 		durable_objects: { bindings: CfDurableObject[] } | undefined;
+		workflows: CfWorkflow[] | undefined;
 		queues: CfQueue[] | undefined;
 		r2_buckets: CfR2Bucket[] | undefined;
 		d1_databases: CfD1Database[] | undefined;
@@ -321,7 +350,9 @@ export interface CfWorkerInit {
 		dispatch_namespaces: CfDispatchNamespace[] | undefined;
 		mtls_certificates: CfMTlsCertificate[] | undefined;
 		logfwdr: CfLogfwdr | undefined;
+		pipelines: CfPipeline[] | undefined;
 		unsafe: CfUnsafe | undefined;
+		assets: CfAssetsBinding | undefined;
 	};
 	/**
 	 * The raw bindings - this is basically never provided and it'll be the bindings above
@@ -341,7 +372,9 @@ export interface CfWorkerInit {
 	tail_consumers: CfTailConsumer[] | undefined;
 	limits: CfUserLimits | undefined;
 	annotations?: Record<string, string | undefined>;
-	experimental_assets: CfExperimentalAssets | undefined;
+	keep_assets?: boolean | undefined;
+	assets: CfAssets | undefined;
+	observability: Observability | undefined;
 }
 
 export interface CfWorkerContext {

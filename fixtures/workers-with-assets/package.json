@@ -1,17 +1,19 @@
 {
-	"name": "assets-worker",
+	"name": "workers-assets-with-user-worker",
 	"private": true,
 	"scripts": {
 		"check:type": "tsc",
-		"dev": "npx wrangler dev",
+		"dev": "wrangler dev",
 		"test:ci": "vitest run",
 		"test:watch": "vitest",
 		"type:tests": "tsc -p ./tests/tsconfig.json"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-tsconfig": "workspace:*",
-		"@cloudflare/workers-types": "^4.20240806.0",
-		"undici": "^5.28.4",
+		"@cloudflare/workers-types": "^4.20250204.0",
+		"typescript": "catalog:default",
+		"undici": "catalog:default",
+		"vitest": "catalog:default",
 		"wrangler": "workspace:*"
 	},
 	"volta": {

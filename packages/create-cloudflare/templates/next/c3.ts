@@ -1,8 +1,7 @@
 import { join } from "path";
-import { crash, updateStatus, warn } from "@cloudflare/cli";
-import { processArgument } from "@cloudflare/cli/args";
+import { updateStatus, warn } from "@cloudflare/cli";
 import { brandColor, dim } from "@cloudflare/cli/colors";
-import { spinner } from "@cloudflare/cli/interactive";
+import { inputPrompt, spinner } from "@cloudflare/cli/interactive";
 import { runFrameworkGenerator } from "frameworks/index";
 import {
 	copyFile,
@@ -18,7 +17,7 @@ import { detectPackageManager } from "helpers/packageManagers";
 import { installPackages } from "helpers/packages";
 import { getTemplatePath } from "../../src/templates";
 import type { TemplateConfig } from "../../src/templates";
-import type { C3Args, C3Context } from "types";
+import type { C3Context } from "types";
 
 const { npm, npx } = detectPackageManager();
 
@@ -27,33 +26,15 @@ const generate = async (ctx: C3Context) => {
 
 	await runFrameworkGenerator(ctx, [projectName]);
 
-	const wranglerToml = readFile(join(getTemplatePath(ctx), "wrangler.toml"));
-
-	// Note: here we add `# KV Example:` to the toml file for the KV example, we don't actually
-	//       include the comment in the template wrangler.toml file just so to keep it identical
-	//       and consistent with that of all the other frameworks
-	//       (instead of making it a special case which needs extra care)
-	const newTomlContent = wranglerToml.replace(
-		/#\s+\[\[kv_namespaces\]\]\n#\s+binding\s+=\s+"MY_KV_NAMESPACE"\n#\s+id\s+=\s+"[a-zA-Z0-9]+?"/,
-		($1) => `# KV Example:\n${$1}`,
-	);
-
-	if (!/# KV Example/.test(newTomlContent)) {
-		// This should never happen to users, it is a check mostly so that
-		// if the toml file is changed in a way that breaks the "KV Example" addition
-		// the C3 Next.js e2e runs will fail with this
-		crash("Failed to properly generate the wrangler.toml file");
-	}
-
-	writeFile(join(ctx.project.path, "wrangler.toml"), newTomlContent);
-
-	updateStatus("Created wrangler.toml file");
+	const wranglerConfig = readFile(join(getTemplatePath(ctx), "wrangler.jsonc"));
+	writeFile(join(ctx.project.path, "wrangler.jsonc"), wranglerConfig);
+	updateStatus("Created wrangler.jsonc file");
 };
 
-const updateNextConfig = () => {
+const updateNextConfig = (usesTs: boolean) => {
 	const s = spinner();
 
-	const configFile = "next.config.mjs";
+	const configFile = `next.config.${usesTs ? "ts" : "mjs"}`;
 	s.start(`Updating \`${configFile}\``);
 
 	const configContent = readFile(configFile);
@@ -61,12 +42,12 @@ const updateNextConfig = () => {
 	const updatedConfigFile =
 		`import { setupDevPlatform } from '@cloudflare/next-on-pages/next-dev';
 
-		// Here we use the @cloudflare/next-on-pages next-dev module to allow us to use bindings during local development
-		// (when running the application with \`next dev\`), for more information see:
+		// Here we use the @cloudflare/next-on-pages next-dev module to allow us to
+		// use bindings during local development (when running the application with
+		// \`next dev\`). This function is only necessary during development and
+		// has no impact outside of that. For more information see:
 		// https://github.com/cloudflare/next-on-pages/blob/main/internal-packages/next-dev/README.md
-		if (process.env.NODE_ENV === 'development') {
-		  await setupDevPlatform();
-		}
+		setupDevPlatform().catch(console.error);
 
 		`.replace(/\n\t*/g, "\n") + configContent;
 
@@ -89,7 +70,7 @@ const configure = async (ctx: C3Context) => {
 	]);
 
 	if (!path) {
-		crash("Could not find the `/api` or `/app` directory");
+		throw new Error("Could not find the `/api` or `/app` directory");
 	}
 
 	const usesTs = usesTypescript(ctx);
@@ -108,7 +89,7 @@ const configure = async (ctx: C3Context) => {
 		await writeEslintrc(ctx);
 	}
 
-	updateNextConfig();
+	updateNextConfig(usesTs);
 
 	copyFile(
 		join(getTemplatePath(ctx), "README.md"),
@@ -135,7 +116,7 @@ export const shouldInstallNextOnPagesEslintPlugin = async (
 		return false;
 	}
 
-	return await processArgument(ctx.args, "eslint-plugin" as keyof C3Args, {
+	return await inputPrompt({
 		type: "confirm",
 		question: "Do you want to use the next-on-pages eslint-plugin?",
 		label: "eslint-plugin",
@@ -175,8 +156,9 @@ const addDevDependencies = async (installEslintPlugin: boolean) => {
 export default {
 	configVersion: 1,
 	id: "next",
+	frameworkCli: "create-next-app",
 	platform: "pages",
-	displayName: "Next",
+	displayName: "Next.js",
 	generate,
 	configure,
 	copyFiles: {

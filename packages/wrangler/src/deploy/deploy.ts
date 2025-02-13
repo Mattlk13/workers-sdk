@@ -3,15 +3,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { URLSearchParams } from "node:url";
 import { cancel } from "@cloudflare/cli";
+import { Response } from "undici";
+import { syncAssets } from "../assets";
 import { fetchListResult, fetchResult } from "../cfetch";
-import { printBindings } from "../config";
+import { configFileName, formatConfigSnippet } from "../config";
+import { getBindings, provisionBindings } from "../deployment-bundle/bindings";
 import { bundleWorker } from "../deployment-bundle/bundle";
-import {
-	printBundleSize,
-	printOffendingDependencies,
-} from "../deployment-bundle/bundle-reporter";
+import { printBundleSize } from "../deployment-bundle/bundle-reporter";
 import { getBundleType } from "../deployment-bundle/bundle-type";
 import { createWorkerUploadForm } from "../deployment-bundle/create-worker-upload-form";
+import { logBuildOutput } from "../deployment-bundle/esbuild-plugins/log-build-output";
 import {
 	findAdditionalModules,
 	writeAdditionalModules,
@@ -20,17 +21,16 @@ import {
 	createModuleCollector,
 	getWrangler1xLegacyModuleReferences,
 } from "../deployment-bundle/module-collection";
-import { validateNodeCompat } from "../deployment-bundle/node-compat";
+import { validateNodeCompatMode } from "../deployment-bundle/node-compat";
 import { loadSourceMaps } from "../deployment-bundle/source-maps";
-import { addHyphens } from "../deployments";
 import { confirm } from "../dialogs";
 import { getMigrationsToUpload } from "../durable";
 import { UserError } from "../errors";
-import { syncExperimentalAssets } from "../experimental-assets";
+import { getFlag } from "../experimental-flags";
 import { logger } from "../logger";
 import { getMetricsUsageHeaders } from "../metrics";
 import { isNavigatorDefined } from "../navigator-user-agent";
-import { APIError, ParseError } from "../parse";
+import { APIError, ParseError, parseNonHyphenedUuid } from "../parse";
 import { getWranglerTmpDir } from "../paths";
 import {
 	ensureQueuesExistByConfig,
@@ -46,13 +46,19 @@ import {
 	maybeRetrieveFileSourceMap,
 } from "../sourcemap";
 import triggersDeploy from "../triggers/deploy";
-import { logVersionIdChange } from "../utils/deployment-id-version-id-change";
+import { helpIfErrorIsSizeOrScriptStartup } from "../utils/friendly-validator-errors";
+import { printBindings } from "../utils/print-bindings";
+import { retryOnAPIFailure } from "../utils/retry";
+import {
+	createDeployment,
+	patchNonVersionedScriptSettings,
+} from "../versions/api";
 import { confirmLatestDeploymentOverwrite } from "../versions/deploy";
 import { getZoneForRoute } from "../zones";
+import type { AssetsOptions } from "../assets";
 import type { Config } from "../config";
 import type {
 	CustomDomainRoute,
-	ExperimentalAssets,
 	Route,
 	Rule,
 	ZoneIdRoute,
@@ -67,20 +73,20 @@ import type {
 import type { PostQueueBody, PostTypedConsumerBody } from "../queues/client";
 import type { LegacyAssetPaths } from "../sites";
 import type { RetrieveSourceMapFunction } from "../sourcemap";
+import type { ApiVersion, Percentage, VersionId } from "../versions/types";
+import type { FormData } from "undici";
 
 type Props = {
 	config: Config;
 	accountId: string | undefined;
 	entry: Entry;
 	rules: Config["rules"];
-	name: string | undefined;
+	name: string;
 	env: string | undefined;
 	compatibilityDate: string | undefined;
 	compatibilityFlags: string[] | undefined;
 	legacyAssetPaths: LegacyAssetPaths | undefined;
-	experimentalAssets:
-		| (ExperimentalAssets & { staticAssetsOnly: boolean })
-		| undefined;
+	assetsOptions: AssetsOptions | undefined;
 	vars: Record<string, string> | undefined;
 	defines: Record<string, string> | undefined;
 	alias: Record<string, string> | undefined;
@@ -94,6 +100,7 @@ type Props = {
 	minify: boolean | undefined;
 	nodeCompat: boolean | undefined;
 	outDir: string | undefined;
+	outFile: string | undefined;
 	dryRun: boolean | undefined;
 	noBundle: boolean | undefined;
 	keepVars: boolean | undefined;
@@ -102,7 +109,7 @@ type Props = {
 	oldAssetTtl: number | undefined;
 	projectRoot: string | undefined;
 	dispatchNamespace: string | undefined;
-	experimentalVersions: boolean | undefined;
+	experimentalAutoCreate: boolean;
 };
 
 export type RouteObject = ZoneIdRoute | ZoneNameRoute | CustomDomainRoute;
@@ -128,46 +135,67 @@ export type CustomDomainChangeset = {
 	conflicting: ConflictingCustomDomain[];
 };
 
-export function sleep(ms: number) {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export const validateRoutes = (routes: Route[], assets?: AssetsOptions) => {
+	const invalidRoutes: Record<string, string[]> = {};
+	const mountedAssetRoutes: string[] = [];
 
-const scriptStartupErrorRegex = /startup/i;
+	for (const route of routes) {
+		if (typeof route !== "string" && route.custom_domain) {
+			if (route.pattern.includes("*")) {
+				invalidRoutes[route.pattern] ??= [];
+				invalidRoutes[route.pattern].push(
+					`Wildcard operators (*) are not allowed in Custom Domains`
+				);
+			}
+			if (route.pattern.includes("/")) {
+				invalidRoutes[route.pattern] ??= [];
+				invalidRoutes[route.pattern].push(
+					`Paths are not allowed in Custom Domains`
+				);
+			}
+		} else if (
+			// If we have Assets but we're not always hitting the Worker then validate
+			assets?.directory !== undefined &&
+			assets.assetConfig.run_worker_first !== true
+		) {
+			const pattern = typeof route === "string" ? route : route.pattern;
+			const components = pattern.split("/");
 
-function errIsScriptSize(err: unknown): err is { code: 10027 } {
-	if (!err) {
-		return false;
+			// If this isn't `domain.com/*` then we're mounting to a path
+			if (!(components.length === 2 && components[1] === "*")) {
+				mountedAssetRoutes.push(pattern);
+			}
+		}
+	}
+	if (Object.keys(invalidRoutes).length > 0) {
+		throw new UserError(
+			`Invalid Routes:\n` +
+				Object.entries(invalidRoutes)
+					.map(([route, errors]) => `${route}:\n` + errors.join("\n"))
+					.join(`\n\n`)
+		);
 	}
 
-	// 10027 = workers.api.error.script_too_large
-	if ((err as { code: number }).code === 10027) {
-		return true;
+	if (mountedAssetRoutes.length > 0 && assets?.directory !== undefined) {
+		const relativeAssetsDir = path.relative(process.cwd(), assets.directory);
+
+		logger.once.warn(
+			`Warning: The following routes will attempt to serve Assets on a configured path:\n${mountedAssetRoutes
+				.map((route) => {
+					const routeNoScheme = route.replace(/https?:\/\//g, "");
+					const assetPath = path.join(
+						relativeAssetsDir,
+						routeNoScheme.substring(routeNoScheme.indexOf("/"))
+					);
+					return `  • ${route} (Will match assets: ${assetPath})`;
+				})
+				.join("\n")}` +
+				(assets?.routingConfig.has_user_worker
+					? "\n\nRequests not matching an asset will be forwarded to the Worker's code."
+					: "")
+		);
 	}
-
-	return false;
-}
-
-function errIsStartupErr(err: unknown): err is ParseError & { code: 10021 } {
-	if (!err) {
-		return false;
-	}
-
-	// 10021 = validation error
-	// no explicit error code for more granular errors than "invalid script"
-	// but the error will contain a string error message directly from the
-	// validator.
-	// the error always SHOULD look like "Script startup exceeded CPU limit."
-	// (or the less likely "Script startup exceeded memory limits.")
-	if (
-		(err as { code: number }).code === 10021 &&
-		err instanceof ParseError &&
-		scriptStartupErrorRegex.test(err.notes[0]?.text)
-	) {
-		return true;
-	}
-
-	return false;
-}
+};
 
 export function renderRoute(route: Route): string {
 	let result = "";
@@ -312,15 +340,18 @@ Update them to point to this script instead?`;
 
 export default async function deploy(props: Props): Promise<{
 	sourceMapSize?: number;
-	deploymentId: string | null;
+	versionId: string | null;
 	workerTag: string | null;
+	targets?: string[];
 }> {
 	// TODO: warn if git/hg has uncommitted changes
 	const { config, accountId, name } = props;
 	let workerTag: string | null = null;
-	let deploymentId: string | null = null;
+	let versionId: string | null = null;
 
-	if (!props.dispatchNamespace && accountId && name) {
+	let workerExists: boolean = true;
+
+	if (!props.dispatchNamespace && accountId) {
 		try {
 			const serviceMetaData = await fetchResult<{
 				default_environment: {
@@ -340,14 +371,14 @@ export default async function deploy(props: Props): Promise<{
 					`You are about to publish a Workers Service that was last published via the Cloudflare Dashboard.\nEdits that have been made via the dashboard will be overridden by your local code and config.`
 				);
 				if (!(await confirm("Would you like to continue?"))) {
-					return { deploymentId, workerTag };
+					return { versionId, workerTag };
 				}
 			} else if (script.last_deployed_from === "api") {
 				logger.warn(
 					`You are about to publish a Workers Service that was last updated via the script API.\nEdits that have been made via the script API will be overridden by your local code and config.`
 				);
 				if (!(await confirm("Would you like to continue?"))) {
-					return { deploymentId, workerTag };
+					return { versionId, workerTag };
 				}
 			}
 		} catch (e) {
@@ -355,6 +386,8 @@ export default async function deploy(props: Props): Promise<{
 			// is thrown from the above fetchResult on the first deploy of a Worker
 			if ((e as { code?: number }).code !== 10090) {
 				throw e;
+			} else {
+				workerExists = false;
 			}
 		}
 	}
@@ -366,9 +399,9 @@ export default async function deploy(props: Props): Promise<{
 			""
 		).padStart(2, "0")}-${(new Date().getDate() + "").padStart(2, "0")}`;
 
-		throw new UserError(`A compatibility_date is required when publishing. Add the following to your wrangler.toml file:.
+		throw new UserError(`A compatibility_date is required when publishing. Add the following to your ${configFileName(config.configPath)} file:
     \`\`\`
-    compatibility_date = "${compatibilityDateStr}"
+    ${formatConfigSnippet({ compatibility_date: compatibilityDateStr }, config.configPath, false)}
     \`\`\`
     Or you could pass it in your terminal as \`--compatibility-date ${compatibilityDateStr}\`
 See https://developers.cloudflare.com/workers/platform/compatibility-dates for more information.`);
@@ -376,20 +409,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 	const routes =
 		props.routes ?? config.routes ?? (config.route ? [config.route] : []) ?? [];
-	for (const route of routes) {
-		if (typeof route !== "string" && route.custom_domain) {
-			if (route.pattern.includes("*")) {
-				throw new UserError(
-					`Cannot use "${route.pattern}" as a Custom Domain; wildcard operators (*) are not allowed`
-				);
-			}
-			if (route.pattern.includes("/")) {
-				throw new UserError(
-					`Cannot use "${route.pattern}" as a Custom Domain; paths are not allowed`
-				);
-			}
-		}
-	}
+	validateRoutes(routes, props.assetsOptions);
 
 	const jsxFactory = props.jsxFactory || config.jsx_factory;
 	const jsxFragment = props.jsxFragment || config.jsx_fragment;
@@ -397,13 +417,18 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 	const minify = props.minify ?? config.minify;
 
-	const nodejsCompatMode = validateNodeCompat({
-		legacyNodeCompat: props.nodeCompat ?? config.node_compat ?? false,
-		compatibilityFlags: props.compatibilityFlags ?? config.compatibility_flags,
-		noBundle: props.noBundle ?? config.no_bundle ?? false,
-	});
+	const compatibilityDate =
+		props.compatibilityDate ?? config.compatibility_date;
 	const compatibilityFlags =
 		props.compatibilityFlags ?? config.compatibility_flags;
+	const nodejsCompatMode = validateNodeCompatMode(
+		compatibilityDate,
+		compatibilityFlags,
+		{
+			nodeCompat: props.nodeCompat ?? config.node_compat,
+			noBundle: props.noBundle ?? config.no_bundle,
+		}
+	);
 
 	// Warn if user tries minify with no-bundle
 	if (props.noBundle && minify) {
@@ -413,10 +438,6 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 	}
 
 	const scriptName = props.name;
-	assert(
-		scriptName,
-		'You need to provide a name when publishing a worker. Either pass it as a cli arg with `--name <name>` or in your config file as `name = "<name>"`'
-	);
 
 	assert(
 		!config.site || config.site.bucket,
@@ -455,7 +476,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 		const yes = await confirmLatestDeploymentOverwrite(accountId, scriptName);
 		if (!yes) {
 			cancel("Aborting deploy...");
-			return { deploymentId, workerTag };
+			return { versionId, workerTag };
 		}
 	}
 
@@ -477,13 +498,13 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 	if (config.text_blobs && format === "modules") {
 		throw new UserError(
-			"You cannot configure [text_blobs] with an ES module worker. Instead, import the file directly in your code, and optionally configure `[rules]` in your wrangler.toml"
+			`You cannot configure [text_blobs] with an ES module worker. Instead, import the file directly in your code, and optionally configure \`[rules]\` in your ${configFileName(config.configPath)} file`
 		);
 	}
 
 	if (config.data_blobs && format === "modules") {
 		throw new UserError(
-			"You cannot configure [data_blobs] with an ES module worker. Instead, import the file directly in your code, and optionally configure `[rules]` in your wrangler.toml"
+			`You cannot configure [data_blobs] with an ES module worker. Instead, import the file directly in your code, and optionally configure \`[rules]\` in your ${configFileName(config.configPath)} file`
 		);
 	}
 
@@ -535,6 +556,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 						serveLegacyAssetsFromWorker:
 							!props.isWorkersSite && Boolean(props.legacyAssetPaths),
 						doBindings: config.durable_objects.bindings,
+						workflowBindings: config.workflows ?? [],
 						jsxFactory,
 						jsxFragment,
 						tsconfig: props.tsconfig ?? config.tsconfig,
@@ -545,6 +567,8 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 						checkFetch: false,
 						alias: config.alias,
 						legacyAssets: config.legacy_assets,
+						// We do not mock AE datasets when deploying
+						mockAnalyticsEngineDatasets: [],
 						// enable the cache when publishing
 						bypassAssetCache: false,
 						// We want to know if the build is for development or publishing
@@ -556,21 +580,19 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 							props.compatibilityDate ?? config.compatibility_date,
 							props.compatibilityFlags ?? config.compatibility_flags
 						),
+						plugins: [logBuildOutput(nodejsCompatMode)],
+
+						// Pages specific options used by wrangler pages commands
+						entryName: undefined,
+						inject: undefined,
+						isOutfile: undefined,
+						external: undefined,
+
+						// These options are dev-only
+						testScheduled: undefined,
+						watch: undefined,
 					}
 				);
-
-		// Add modules to dependencies for size warning
-		for (const module of modules) {
-			const modulePath =
-				module.filePath === undefined
-					? module.name
-					: path.relative("", module.filePath);
-			const bytesInOutput =
-				typeof module.content === "string"
-					? Buffer.byteLength(module.content)
-					: module.content.byteLength;
-			dependencies[modulePath] = { bytesInOutput };
-		}
 
 		// Add modules to dependencies for size warning
 		for (const module of modules) {
@@ -596,21 +618,19 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 					config,
 					legacyEnv: props.legacyEnv,
 					env: props.env,
+					dispatchNamespace: props.dispatchNamespace,
 				})
 			: undefined;
 
-		// Upload assets if experimental assets is being used
-		// temporarily gate this very explicitly just in case
-		const experimentalAssetsWorkerInfo: CfWorkerInit["experimental_assets"] =
-			props.experimentalAssets && !props.dryRun
-				? {
-						jwt: await syncExperimentalAssets(
-							accountId,
-							scriptName,
-							props.experimentalAssets.directory
-						),
-						staticAssetsOnly: props.experimentalAssets.staticAssetsOnly,
-					}
+		// Upload assets if assets is being used
+		const assetsJwt =
+			props.assetsOptions && !props.dryRun
+				? await syncAssets(
+						accountId,
+						props.assetsOptions.directory,
+						scriptName,
+						props.dispatchNamespace
+					)
 				: undefined;
 
 		const legacyAssets = await syncLegacyAssets(
@@ -626,18 +646,14 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			props.oldAssetTtl
 		);
 
-		const bindings: CfWorkerInit["bindings"] = {
-			kv_namespaces: (config.kv_namespaces || []).concat(
+		const bindings = getBindings({
+			...config,
+			kv_namespaces: config.kv_namespaces.concat(
 				legacyAssets.namespace
 					? { binding: "__STATIC_CONTENT", id: legacyAssets.namespace }
 					: []
 			),
-			send_email: config.send_email,
 			vars: { ...config.vars, ...props.vars },
-			wasm_modules: config.wasm_modules,
-			browser: config.browser,
-			ai: config.ai,
-			version_metadata: config.version_metadata,
 			text_blobs: {
 				...config.text_blobs,
 				...(legacyAssets.manifest &&
@@ -645,26 +661,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 						__STATIC_CONTENT_MANIFEST: "__STATIC_CONTENT_MANIFEST",
 					}),
 			},
-			data_blobs: config.data_blobs,
-			durable_objects: config.durable_objects,
-			queues: config.queues.producers?.map((producer) => {
-				return { binding: producer.binding, queue_name: producer.queue };
-			}),
-			r2_buckets: config.r2_buckets,
-			d1_databases: config.d1_databases,
-			vectorize: config.vectorize,
-			hyperdrive: config.hyperdrive,
-			services: config.services,
-			analytics_engine_datasets: config.analytics_engine_datasets,
-			dispatch_namespaces: config.dispatch_namespaces,
-			mtls_certificates: config.mtls_certificates,
-			logfwdr: config.logfwdr,
-			unsafe: {
-				bindings: config.unsafe.bindings,
-				metadata: config.unsafe.metadata,
-				capnp: config.unsafe.capnp,
-			},
-		};
+		});
 
 		if (legacyAssets.manifest) {
 			modules.push({
@@ -677,7 +674,9 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 		// The upload API only accepts an empty string or no specified placement for the "off" mode.
 		const placement: CfPlacement | undefined =
-			config.placement?.mode === "smart" ? { mode: "smart" } : undefined;
+			config.placement?.mode === "smart"
+				? { mode: "smart", hint: config.placement.hint }
+				: undefined;
 
 		const entryPointName = path.basename(resolvedEntryPointPath);
 		const main: CfModule = {
@@ -703,7 +702,15 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			placement,
 			tail_consumers: config.tail_consumers,
 			limits: config.limits,
-			experimental_assets: experimentalAssetsWorkerInfo,
+			assets:
+				props.assetsOptions && assetsJwt
+					? {
+							jwt: assetsJwt,
+							routingConfig: props.assetsOptions.routingConfig,
+							assetConfig: props.assetsOptions.assetConfig,
+						}
+					: undefined,
+			observability: config.observability,
 		};
 
 		sourceMapSize = worker.sourceMaps?.reduce(
@@ -733,43 +740,124 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			}
 		}
 
+		// We can use the new versions/deployments APIs if we:
+		// * are uploading a worker that already exists
+		// * aren't a dispatch namespace deploy
+		// * aren't a service env deploy
+		// * aren't a service Worker
+		// * we don't have DO migrations
+		// * we aren't an fpw
+		const canUseNewVersionsDeploymentsApi =
+			workerExists &&
+			props.dispatchNamespace === undefined &&
+			prod &&
+			format === "modules" &&
+			migrations === undefined &&
+			!config.first_party_worker;
+
+		let workerBundle: FormData;
+
 		if (props.dryRun) {
+			workerBundle = createWorkerUploadForm(worker);
 			printBindings({ ...withoutStaticAssets, vars: maskedVars });
 		} else {
+			assert(accountId, "Missing accountId");
+
+			if (getFlag("RESOURCES_PROVISION")) {
+				await provisionBindings(
+					bindings,
+					accountId,
+					scriptName,
+					props.experimentalAutoCreate,
+					props.config
+				);
+			}
+			workerBundle = createWorkerUploadForm(worker);
+
 			await ensureQueuesExistByConfig(config);
 			let bindingsPrinted = false;
 
 			// Upload the script so it has time to propagate.
-			// We can also now tell whether available_on_subdomain is set
 			try {
-				const result = await fetchResult<{
-					available_on_subdomain: boolean;
+				let result: {
 					id: string | null;
 					etag: string | null;
 					pipeline_hash: string | null;
 					mutable_pipeline_id: string | null;
 					deployment_id: string | null;
-					startup_time_ms: number;
-				}>(
-					workerUrl,
-					{
-						method: "PUT",
-						body: createWorkerUploadForm(worker),
-						headers: await getMetricsUsageHeaders(config.send_metrics),
-					},
-					new URLSearchParams({
-						include_subdomain_availability: "true",
-						// pass excludeScript so the whole body of the
-						// script doesn't get included in the response
-						excludeScript: "true",
-					})
-				);
+					startup_time_ms?: number;
+				};
 
-				logger.log("Worker Startup Time:", result.startup_time_ms, "ms");
+				// If we're using the new APIs, first upload the version
+				if (canUseNewVersionsDeploymentsApi) {
+					// Upload new version
+					const versionResult = await retryOnAPIFailure(async () =>
+						fetchResult<ApiVersion>(
+							`/accounts/${accountId}/workers/scripts/${scriptName}/versions`,
+							{
+								method: "POST",
+								body: workerBundle,
+								headers: await getMetricsUsageHeaders(config.send_metrics),
+							}
+						)
+					);
+
+					// Deploy new version to 100%
+					const versionMap = new Map<VersionId, Percentage>();
+					versionMap.set(versionResult.id, 100);
+					await createDeployment(accountId, scriptName, versionMap, undefined);
+
+					// Update tail consumers, logpush, and observability settings
+					await patchNonVersionedScriptSettings(accountId, scriptName, {
+						tail_consumers: worker.tail_consumers,
+						logpush: worker.logpush,
+						// If the user hasn't specified observability assume that they want it disabled if they have it on.
+						// This is a no-op in the event that they don't have observability enabled, but will remove observability
+						// if it has been removed from their Wrangler configuration file
+						observability: worker.observability ?? { enabled: false },
+					});
+
+					result = {
+						id: null, // fpw - ignore
+						etag: versionResult.resources.script.etag,
+						pipeline_hash: null, // fpw - ignore
+						mutable_pipeline_id: null, // fpw - ignore
+						deployment_id: versionResult.id, // version id not deployment id but easier to adapt here
+						startup_time_ms: versionResult.startup_time_ms,
+					};
+				} else {
+					result = await retryOnAPIFailure(async () =>
+						fetchResult<{
+							id: string | null;
+							etag: string | null;
+							pipeline_hash: string | null;
+							mutable_pipeline_id: string | null;
+							deployment_id: string | null;
+							startup_time_ms: number;
+						}>(
+							workerUrl,
+							{
+								method: "PUT",
+								body: workerBundle,
+								headers: await getMetricsUsageHeaders(config.send_metrics),
+							},
+							new URLSearchParams({
+								// pass excludeScript so the whole body of the
+								// script doesn't get included in the response
+								excludeScript: "true",
+							})
+						)
+					);
+				}
+
+				if (result.startup_time_ms) {
+					logger.log("Worker Startup Time:", result.startup_time_ms, "ms");
+				}
 				bindingsPrinted = true;
+
 				printBindings({ ...withoutStaticAssets, vars: maskedVars });
 
-				deploymentId = addHyphens(result.deployment_id) ?? result.deployment_id;
+				versionId = parseNonHyphenedUuid(result.deployment_id);
 
 				if (config.first_party_worker) {
 					// Print some useful information returned after publishing
@@ -795,7 +883,12 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 				if (!bindingsPrinted) {
 					printBindings({ ...withoutStaticAssets, vars: maskedVars });
 				}
-				helpIfErrorIsSizeOrScriptStartup(err, dependencies);
+				await helpIfErrorIsSizeOrScriptStartup(
+					err,
+					dependencies,
+					workerBundle,
+					props.projectRoot
+				);
 
 				// Apply source mapping to validation startup errors if possible
 				if (
@@ -844,6 +937,15 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 				throw err;
 			}
 		}
+		if (props.outFile) {
+			// we're using a custom output file,
+			// so let's first ensure it's parent directory exists
+			mkdirSync(path.dirname(props.outFile), { recursive: true });
+
+			const serializedFormData = await new Response(workerBundle).arrayBuffer();
+
+			writeFileSync(props.outFile, Buffer.from(serializedFormData));
+		}
 	} finally {
 		if (typeof destination !== "string") {
 			// this means we're using a temp dir,
@@ -854,9 +956,8 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 	if (props.dryRun) {
 		logger.log(`--dry-run: exiting now.`);
-		return { deploymentId, workerTag };
+		return { versionId, workerTag };
 	}
-	assert(accountId, "Missing accountId");
 
 	const uploadMs = Date.now() - start;
 
@@ -864,52 +965,30 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 
 	// Early exit for WfP since it doesn't need the below code
 	if (props.dispatchNamespace !== undefined) {
-		deployWfpUserWorker(props.dispatchNamespace, deploymentId);
-		return { deploymentId, workerTag };
+		deployWfpUserWorker(props.dispatchNamespace, versionId);
+		return { versionId, workerTag };
 	}
 
 	// deploy triggers
-	await triggersDeploy(props);
+	const targets = await triggersDeploy(props);
 
-	logger.log("Current Deployment ID:", deploymentId);
-	logger.log("Current Version ID:", deploymentId);
+	logger.log("Current Version ID:", versionId);
 
-	logVersionIdChange();
-
-	return { sourceMapSize, deploymentId, workerTag };
+	return {
+		sourceMapSize,
+		versionId,
+		workerTag,
+		targets: targets ?? [],
+	};
 }
 
 function deployWfpUserWorker(
 	dispatchNamespace: string,
-	deploymentId: string | null
+	versionId: string | null
 ) {
 	// Will go under the "Uploaded" text
 	logger.log("  Dispatch Namespace:", dispatchNamespace);
-	logger.log("Current Deployment ID:", deploymentId);
-	logger.log("Current Version ID:", deploymentId);
-
-	logVersionIdChange();
-}
-
-export function helpIfErrorIsSizeOrScriptStartup(
-	err: unknown,
-	dependencies: { [path: string]: { bytesInOutput: number } }
-) {
-	if (errIsScriptSize(err)) {
-		printOffendingDependencies(dependencies);
-	} else if (errIsStartupErr(err)) {
-		const youFailed =
-			"Your Worker failed validation because it exceeded startup limits.";
-		const heresWhy =
-			"To ensure fast responses, we place constraints on Worker startup -- like how much CPU it can use, or how long it can take.";
-		const heresTheProblem =
-			"Your Worker failed validation, which means it hit one of these startup limits.";
-		const heresTheSolution =
-			"Try reducing the amount of work done during startup (outside the event handler), either by removing code or relocating it inside the event handler.";
-		logger.warn(
-			[youFailed, heresWhy, heresTheProblem, heresTheSolution].join("\n")
-		);
-	}
+	logger.log("Current Version ID:", versionId);
 }
 
 export function formatTime(duration: number) {

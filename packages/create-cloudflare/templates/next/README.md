@@ -46,11 +46,10 @@ In order to enable the example:
   ```ts
   // KV Example:
   ```
-  and uncomment the commented lines below it.
-- Do the same in the `wrangler.toml` file, where
-  the comment is:
+  and uncomment the commented lines below it (also uncomment the relevant imports).
+- In the `wrangler.jsonc` file add the following configuration line:
   ```
-  # KV Example:
+  "kv_namespaces": [{ "binding": "MY_KV_NAMESPACE", "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }],
   ```
 - If you're using TypeScript run the `cf-typegen` script to update the `env.d.ts` file:
   ```bash

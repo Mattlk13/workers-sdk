@@ -15,9 +15,9 @@ import {
 import { getUserServiceName } from "../core";
 import {
 	getMiniflareObjectBindings,
-	kProxyNodeBinding,
 	objectEntryWorker,
 	Plugin,
+	ProxyNodeBinding,
 	SERVICE_LOOPBACK,
 } from "../shared";
 
@@ -53,7 +53,9 @@ export const QUEUES_PLUGIN: Plugin<typeof QueuesOptionsSchema> = {
 	},
 	getNodeBindings(options) {
 		const queues = bindingKeys(options.queueProducers);
-		return Object.fromEntries(queues.map((name) => [name, kProxyNodeBinding]));
+		return Object.fromEntries(
+			queues.map((name) => [name, new ProxyNodeBinding()])
+		);
 	},
 	async getServices({
 		options,
@@ -84,7 +86,11 @@ export const QUEUES_PLUGIN: Plugin<typeof QueuesOptionsSchema> = {
 					{ name: "broker.worker.js", esModule: SCRIPT_QUEUE_BROKER_OBJECT() },
 				],
 				durableObjectNamespaces: [
-					{ className: QUEUE_BROKER_OBJECT_CLASS_NAME, uniqueKey },
+					{
+						className: QUEUE_BROKER_OBJECT_CLASS_NAME,
+						uniqueKey,
+						preventEviction: true,
+					},
 				],
 				// Miniflare's Queue broker is in-memory only at the moment
 				durableObjectStorage: { inMemory: kVoid },

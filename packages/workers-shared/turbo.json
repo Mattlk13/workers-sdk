@@ -1,8 +1,16 @@
 {
 	"$schema": "http://turbo.build/schema.json",
 	"extends": ["//"],
-	"pipeline": {
+	"tasks": {
 		"build": {
+			"inputs": [
+				"asset-worker/**",
+				"router-worker/**",
+				"utils/**",
+				"*.js",
+				"*.ts",
+				"*.json"
+			],
 			"outputs": ["dist/**"]
 		}
 	}

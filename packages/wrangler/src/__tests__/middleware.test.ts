@@ -30,7 +30,9 @@ describe("middleware", () => {
 	describe("workers change behaviour with middleware with wrangler dev", () => {
 		runInTempDir();
 
-		process.env.EXPERIMENTAL_MIDDLEWARE = "true";
+		beforeEach(() => {
+			vi.stubEnv("EXPERIMENTAL_MIDDLEWARE", "true");
+		});
 
 		describe("module workers", () => {
 			it("should register a middleware and intercept", async () => {
@@ -272,7 +274,9 @@ describe("middleware", () => {
 	describe("unchanged functionality when wrapping with middleware", () => {
 		runInTempDir();
 
-		process.env.EXPERIMENTAL_MIDDLEWARE = "true";
+		beforeEach(() => {
+			vi.stubEnv("EXPERIMENTAL_MIDDLEWARE", "true");
+		});
 
 		describe("module workers", () => {
 			it("should return Hello World with no middleware export", async () => {
@@ -814,6 +818,11 @@ describe("middleware", () => {
 
 	describe("multiple middleware", () => {
 		runInTempDir();
+
+		beforeEach(() => {
+			vi.stubEnv("EXPERIMENTAL_MIDDLEWARE", "true");
+		});
+
 		it("should build multiple middleware as expected", async () => {
 			await seedFs({
 				"src/index.js": dedent/* javascript */ `
@@ -861,7 +870,11 @@ describe("middleware", () => {
 					.replace(/\/\/ .*/g, "")
 					.trim()
 			).toMatchInlineSnapshot(`
-				"var src_default = {
+				"var __defProp = Object.defineProperty;
+				var __name = (target, value) => __defProp(target, \\"name\\", { value, configurable: true });
+
+
+				var src_default = {
 				  async fetch(request, env) {
 				    return Response.json(env);
 				  }
@@ -873,6 +886,7 @@ describe("middleware", () => {
 				    return new Response(\\"Hello World\\");
 				  }
 				};
+				__name(DurableObjectExample, \\"DurableObjectExample\\");
 
 
 				var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
@@ -885,6 +899,7 @@ describe("middleware", () => {
 				function __facade_register__(...args) {
 				  __facade_middleware__.push(...args.flat());
 				}
+				__name(__facade_register__, \\"__facade_register__\\");
 				function __facade_invokeChain__(request, env, ctx, dispatch, middlewareChain) {
 				  const [head, ...tail] = middlewareChain;
 				  const middlewareCtx = {
@@ -895,12 +910,14 @@ describe("middleware", () => {
 				  };
 				  return head(request, env, ctx, middlewareCtx);
 				}
+				__name(__facade_invokeChain__, \\"__facade_invokeChain__\\");
 				function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 				  return __facade_invokeChain__(request, env, ctx, dispatch, [
 				    ...__facade_middleware__,
 				    finalMiddleware
 				  ]);
 				}
+				__name(__facade_invoke__, \\"__facade_invoke__\\");
 
 
 				var __Facade_ScheduledController__ = class {
@@ -917,6 +934,7 @@ describe("middleware", () => {
 				    this.#noRetry();
 				  }
 				};
+				__name(__Facade_ScheduledController__, \\"__Facade_ScheduledController__\\");
 				function wrapExportedHandler(worker) {
 				  if (__INTERNAL_WRANGLER_MIDDLEWARE__ === void 0 || __INTERNAL_WRANGLER_MIDDLEWARE__.length === 0) {
 				    return worker;
@@ -924,16 +942,16 @@ describe("middleware", () => {
 				  for (const middleware of __INTERNAL_WRANGLER_MIDDLEWARE__) {
 				    __facade_register__(middleware);
 				  }
-				  const fetchDispatcher = function(request, env, ctx) {
+				  const fetchDispatcher = /* @__PURE__ */ __name(function(request, env, ctx) {
 				    if (worker.fetch === void 0) {
 				      throw new Error(\\"Handler does not export a fetch() function.\\");
 				    }
 				    return worker.fetch(request, env, ctx);
-				  };
+				  }, \\"fetchDispatcher\\");
 				  return {
 				    ...worker,
 				    fetch(request, env, ctx) {
-				      const dispatcher = function(type, init) {
+				      const dispatcher = /* @__PURE__ */ __name(function(type, init) {
 				        if (type === \\"scheduled\\" && worker.scheduled !== void 0) {
 				          const controller = new __Facade_ScheduledController__(
 				            Date.now(),
@@ -943,11 +961,12 @@ describe("middleware", () => {
 				          );
 				          return worker.scheduled(controller, env, ctx);
 				        }
-				      };
+				      }, \\"dispatcher\\");
 				      return __facade_invoke__(request, env, ctx, dispatcher, fetchDispatcher);
 				    }
 				  };
 				}
+				__name(wrapExportedHandler, \\"wrapExportedHandler\\");
 				function wrapWorkerEntrypoint(klass) {
 				  if (__INTERNAL_WRANGLER_MIDDLEWARE__ === void 0 || __INTERNAL_WRANGLER_MIDDLEWARE__.length === 0) {
 				    return klass;
@@ -986,6 +1005,7 @@ describe("middleware", () => {
 				    }
 				  };
 				}
+				__name(wrapWorkerEntrypoint, \\"wrapWorkerEntrypoint\\");
 				var WRAPPED_ENTRY;
 				if (typeof middleware_insertion_facade_default === \\"object\\") {
 				  WRAPPED_ENTRY = wrapExportedHandler(middleware_insertion_facade_default);

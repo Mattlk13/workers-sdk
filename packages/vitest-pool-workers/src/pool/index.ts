@@ -9,6 +9,7 @@ import { createBirpc } from "birpc";
 import * as devalue from "devalue";
 import {
 	compileModuleRules,
+	getNodeCompat,
 	kCurrentWorker,
 	kUnsafeEphemeralUniqueKey,
 	Log,
@@ -22,7 +23,9 @@ import {
 } from "miniflare";
 import semverSatisfies from "semver/functions/satisfies.js";
 import { createMethodsRPC } from "vitest/node";
+import { workerdBuiltinModules } from "../shared/builtin-modules";
 import { createChunkingSocket } from "../shared/chunking-socket";
+import { CompatibilityFlagAssertions } from "./compatibility-flag-assertions";
 import { OPTIONS_PATH, parseProjectOptions } from "./config";
 import {
 	getProjectPath,
@@ -39,7 +42,6 @@ import {
 import {
 	ensurePosixLikePath,
 	handleModuleFallbackRequest,
-	workerdBuiltinModules,
 } from "./module-fallback";
 import type {
 	SourcelessWorkerOptions,
@@ -56,14 +58,23 @@ import type {
 import type { Readable } from "node:stream";
 import type { MessagePort } from "node:worker_threads";
 import type {
-	ResolvedConfig,
 	RunnerRPC,
 	RuntimeRPC,
+	SerializedConfig,
 	WorkerContext,
 } from "vitest";
 import type { ProcessPool, Vitest, WorkspaceProject } from "vitest/node";
 
-// https://github.com/vitest-dev/vitest/blob/v1.5.0/packages/vite-node/src/client.ts#L386
+interface SerializedOptions {
+	main?: string;
+	durableObjectBindingDesignators?: Map<
+		string /* bound name */,
+		DurableObjectDesignator
+	>;
+	isolatedStorage?: boolean;
+}
+
+// https://github.com/vitest-dev/vitest/blob/v2.1.1/packages/vite-node/src/client.ts#L468
 declare const __vite_ssr_import__: unknown;
 assert(
 	typeof __vite_ssr_import__ === "undefined",
@@ -71,6 +82,21 @@ assert(
 );
 
 function structuredSerializableStringify(value: unknown): string {
+	// Vitest v2+ sends a sourcemap to it's runner, which we can't serialise currently
+	// Deleting it doesn't seem to cause any problems, and error stack traces etc...
+	// still seem to work
+	// TODO: Figure out how to serialise SourceMap instances
+	if (
+		value &&
+		typeof value === "object" &&
+		"r" in value &&
+		value.r &&
+		typeof value.r === "object" &&
+		"map" in value.r &&
+		value.r.map
+	) {
+		delete value.r.map;
+	}
 	return devalue.stringify(value, structuredSerializableReducers);
 }
 function structuredSerializableParse(value: string): unknown {
@@ -91,6 +117,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DIST_PATH = path.resolve(__dirname, "..");
 const POOL_WORKER_PATH = path.join(DIST_PATH, "worker", "index.mjs");
+
+const NODE_URL_PATH = path.join(DIST_PATH, "worker", "lib", "node", "url.mjs");
 
 const symbolizerWarning =
 	"warning: Not symbolizing stack traces because $LLVM_SYMBOLIZER is not set.";
@@ -293,68 +321,6 @@ const SELF_SERVICE_BINDING = "__VITEST_POOL_WORKERS_SELF_SERVICE";
 const LOOPBACK_SERVICE_BINDING = "__VITEST_POOL_WORKERS_LOOPBACK_SERVICE";
 const RUNNER_OBJECT_BINDING = "__VITEST_POOL_WORKERS_RUNNER_OBJECT";
 
-const numericCompare = new Intl.Collator("en", { numeric: true }).compare;
-
-interface CompatibilityFlagCheckOptions {
-	// Context to check against
-	compatibilityFlags: string[];
-	compatibilityDate?: string;
-	relativeProjectPath: string | number;
-	relativeWranglerConfigPath?: string;
-
-	// Details on flag to check
-	enableFlag: string;
-	disableFlag?: string;
-	defaultOnDate?: string;
-}
-function assertCompatibilityFlagEnabled(opts: CompatibilityFlagCheckOptions) {
-	const hasWranglerConfig = opts.relativeWranglerConfigPath !== undefined;
-
-	// Check disable flag (if any) not enabled
-	if (
-		opts.disableFlag !== undefined &&
-		opts.compatibilityFlags.includes(opts.disableFlag)
-	) {
-		let message = `In project ${opts.relativeProjectPath}`;
-		if (hasWranglerConfig) {
-			message += `'s configuration file ${opts.relativeWranglerConfigPath}, \`compatibility_flags\` must not contain "${opts.disableFlag}".\nSimilarly`;
-			// Since the config is merged by this point, we don't know where the
-			// disable flag came from. So we include both possible locations in the
-			// error message. Note the enable-flag case doesn't have this problem, as
-			// we're asking the user to add something to *either* of their configs.
-		}
-		message +=
-			`, \`${OPTIONS_PATH}.miniflare.compatibilityFlags\` must not contain "${opts.disableFlag}".\n` +
-			"This flag is incompatible with `@cloudflare/vitest-pool-workers`.";
-		throw new Error(message);
-	}
-
-	// Check flag enabled or compatibility date enables flag by default
-	const enabledByFlag = opts.compatibilityFlags.includes(opts.enableFlag);
-	const enabledByDate =
-		opts.compatibilityDate !== undefined &&
-		opts.defaultOnDate !== undefined &&
-		numericCompare(opts.compatibilityDate, opts.defaultOnDate) >= 0;
-	if (!(enabledByFlag || enabledByDate)) {
-		let message = `In project ${opts.relativeProjectPath}`;
-		if (hasWranglerConfig) {
-			message += `'s configuration file ${opts.relativeWranglerConfigPath}, \`compatibility_flags\` must contain "${opts.enableFlag}"`;
-		} else {
-			message += `, \`${OPTIONS_PATH}.miniflare.compatibilityFlags\` must contain "${opts.enableFlag}"`;
-		}
-		if (opts.defaultOnDate !== undefined) {
-			if (hasWranglerConfig) {
-				message += `, or \`compatibility_date\` must be >= "${opts.defaultOnDate}"`;
-			} else {
-				message += `, or \`${OPTIONS_PATH}.miniflare.compatibilityDate\` must be >= "${opts.defaultOnDate}"`;
-			}
-		}
-		message +=
-			".\nThis flag is required to use `@cloudflare/vitest-pool-workers`.";
-		throw new Error(message);
-	}
-}
-
 function buildProjectWorkerOptions(
 	project: Omit<Project, "testFiles">
 ): ProjectWorkers {
@@ -374,23 +340,42 @@ function buildProjectWorkerOptions(
 	// of the libraries it depends on expect `require()` to return
 	// `module.exports` directly, rather than `{ default: module.exports }`.
 	runnerWorker.compatibilityFlags ??= [];
-	assertCompatibilityFlagEnabled({
-		compatibilityFlags: runnerWorker.compatibilityFlags,
+
+	const flagAssertions = new CompatibilityFlagAssertions({
 		compatibilityDate: runnerWorker.compatibilityDate,
-		relativeProjectPath: project.relativePath,
-		relativeWranglerConfigPath,
-		// https://developers.cloudflare.com/workers/configuration/compatibility-dates/#commonjs-modules-do-not-export-a-module-namespace
-		enableFlag: "export_commonjs_default",
-		disableFlag: "export_commonjs_namespace",
-		defaultOnDate: "2022-10-31",
-	});
-	assertCompatibilityFlagEnabled({
 		compatibilityFlags: runnerWorker.compatibilityFlags,
-		compatibilityDate: runnerWorker.compatibilityDate,
-		relativeProjectPath: project.relativePath,
+		optionsPath: `${OPTIONS_PATH}.miniflare`,
+		relativeProjectPath: project.relativePath.toString(),
 		relativeWranglerConfigPath,
-		enableFlag: "nodejs_compat",
 	});
+
+	const assertions = [
+		() =>
+			flagAssertions.assertIsEnabled({
+				enableFlag: "export_commonjs_default",
+				disableFlag: "export_commonjs_namespace",
+				defaultOnDate: "2022-10-31",
+			}),
+	];
+
+	for (const assertion of assertions) {
+		const result = assertion();
+		if (!result.isValid) {
+			throw new Error(result.errorMessage);
+		}
+	}
+
+	const { mode } = getNodeCompat(
+		runnerWorker.compatibilityDate,
+		runnerWorker.compatibilityFlags
+	);
+
+	if (mode !== "v1" && mode !== "v2") {
+		runnerWorker.compatibilityFlags.push(
+			"nodejs_compat",
+			"no_nodejs_compat_v2"
+		);
+	}
 
 	// Required for `workerd:unsafe` module. We don't require this flag to be set
 	// as it's experimental, so couldn't be deployed by users.
@@ -485,6 +470,13 @@ function buildProjectWorkerOptions(
 			type: "ESModule",
 			path: path.join(modulesRoot, DEFINES_MODULE_PATH),
 			contents: defines,
+		},
+		// The workerd provided `node:url` module doesn't support everything Vitest needs.
+		// As a short-term fix, inject a `node:url` polyfill into the worker bundle
+		{
+			type: "ESModule",
+			path: path.join(modulesRoot, "node:url"),
+			contents: fs.readFileSync(NODE_URL_PATH),
 		},
 	];
 
@@ -654,7 +646,7 @@ async function runTests(
 	mf: Miniflare,
 	workerName: string,
 	project: Project,
-	config: ResolvedConfig,
+	config: SerializedConfig,
 	files: string[],
 	invalidates: string[] = []
 ) {
@@ -731,7 +723,9 @@ async function runTests(
 	const rules = project.options.miniflare?.modulesRules;
 	const compiledRules = compileModuleRules(rules ?? []);
 
-	const localRpcFunctions = createMethodsRPC(project.project);
+	const localRpcFunctions = createMethodsRPC(project.project, {
+		cacheFs: false,
+	});
 	const patchedLocalRpcFunctions: RuntimeRPC = {
 		...localRpcFunctions,
 		async fetch(...args) {
@@ -944,6 +938,7 @@ export default function (ctx: Vitest): ProcessPool {
 				// serialisable. `getSerializableConfig()` may also return references to
 				// the same objects, so override it with a new object.
 				config.poolOptions = {
+					// @ts-expect-error Vitest provides no way to extend this type
 					threads: {
 						// Allow workers to be re-used by removing the isolation requirement
 						isolate: false,
@@ -965,7 +960,7 @@ export default function (ctx: Vitest): ProcessPool {
 						// project, so we know whether to call out to the loopback service
 						// to push/pop the storage stack between tests.
 						isolatedStorage: project.options.isolatedStorage,
-					},
+					} satisfies SerializedOptions,
 				};
 
 				const mf = await getProjectMiniflare(ctx, project);
@@ -1036,6 +1031,12 @@ export default function (ctx: Vitest): ProcessPool {
 			// const thingModule = moduleGraph.getModuleById(".../packages/vitest-pool-workers/test/kv/thing.ts");
 			// assert(testModule && thingModule);
 			// thingModule.importers.add(testModule);
+		},
+		async collectTests(_specs, _invalidates) {
+			// TODO: This is a new API introduced in Vitest v2+ which we should consider supporting at some point
+			throw new Error(
+				"The Cloudflare Workers Vitest integration does not support the `.collect()` or `vitest list` APIs"
+			);
 		},
 		async close() {
 			// `close()` will be called when shutting down Vitest or updating config

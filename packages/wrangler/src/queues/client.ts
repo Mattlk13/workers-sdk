@@ -10,7 +10,7 @@ export interface PostQueueBody {
 	settings?: QueueSettings;
 }
 
-export interface WorkerService {
+interface WorkerService {
 	id: string;
 	default_environment: {
 		environment: string;
@@ -19,6 +19,7 @@ export interface WorkerService {
 
 export interface QueueSettings {
 	delivery_delay?: number;
+	message_retention_period?: number;
 }
 
 export interface PostQueueResponse {
@@ -34,7 +35,7 @@ export interface QueueResponse {
 	queue_name: string;
 	created_on: string;
 	modified_on: string;
-	producers: ScriptReference[];
+	producers: Producer[];
 	producers_total_count: number;
 	consumers: Consumer[];
 	consumers_total_count: number;
@@ -47,6 +48,11 @@ export interface ScriptReference {
 	service?: string;
 	environment?: string;
 }
+
+export type Producer = ScriptReference & {
+	type: string;
+	bucket_name?: string;
+};
 
 export type Consumer = ScriptReference & {
 	dead_letter_queue?: string;
@@ -109,6 +115,18 @@ export async function createQueue(
 	});
 }
 
+export async function updateQueue(
+	config: Config,
+	body: PostQueueBody,
+	queue_id: string
+): Promise<QueueResponse> {
+	const accountId = await requireAuth(config);
+	return fetchResult(queuesUrl(accountId, queue_id), {
+		method: "PATCH",
+		body: JSON.stringify(body),
+	});
+}
+
 export async function deleteQueue(
 	config: Config,
 	queueName: string
@@ -117,10 +135,7 @@ export async function deleteQueue(
 	return deleteQueueById(config, queue.queue_id);
 }
 
-export async function deleteQueueById(
-	config: Config,
-	queueId: string
-): Promise<void> {
+async function deleteQueueById(config: Config, queueId: string): Promise<void> {
 	const accountId = await requireAuth(config);
 	return fetchResult(queuesUrl(accountId, queueId), {
 		method: "DELETE",
@@ -144,7 +159,7 @@ export async function listQueues(
 	return fetchResult(queuesUrl(accountId), {}, params);
 }
 
-export async function listAllQueues(
+async function listAllQueues(
 	config: Config,
 	queueNames: string[]
 ): Promise<QueueResponse[]> {
@@ -204,10 +219,9 @@ async function ensureQueuesExist(config: Config, queueNames: string[]) {
 }
 
 export async function getQueueById(
-	config: Pick<Config, "account_id">,
+	accountId: string,
 	queueId: string
 ): Promise<QueueResponse> {
-	const accountId = await requireAuth(config);
 	return fetchResult(queuesUrl(accountId, queueId), {});
 }
 
@@ -220,7 +234,7 @@ export async function putQueue(
 	return putQueueById(config, queue.queue_id, body);
 }
 
-export async function putQueueById(
+async function putQueueById(
 	config: Config,
 	queueId: string,
 	body: PostQueueBody
@@ -241,7 +255,7 @@ export async function postConsumer(
 	return postConsumerById(config, queue.queue_id, body);
 }
 
-export async function postConsumerById(
+async function postConsumerById(
 	config: Config,
 	queueId: string,
 	body: PostTypedConsumerBody
@@ -336,7 +350,7 @@ async function resolveWorkerConsumerByName(
 	return consumers[0];
 }
 
-export async function deleteConsumerById(
+async function deleteConsumerById(
 	config: Config,
 	queueId: string,
 	consumerId: string

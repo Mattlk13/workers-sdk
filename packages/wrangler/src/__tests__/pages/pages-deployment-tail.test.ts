@@ -15,9 +15,8 @@ import type {
 	QueueEvent,
 	RequestEvent,
 	ScheduledEvent,
-	TailEvent,
 	TailEventMessage,
-	TailInfo,
+	TailEventMessageType,
 } from "../../tail/createTail";
 import type { RequestInit } from "undici";
 import type WebSocket from "ws";
@@ -63,13 +62,9 @@ describe("pages deployment tail", () => {
 	mockApiToken();
 	const std = mockConsoleMethods();
 
-	beforeAll(() => {
+	beforeEach(() => {
 		// Force the CLI to be "non-interactive" in test env
-		process.env.CF_PAGES = "1";
-	});
-
-	afterAll(() => {
-		delete process.env.CF_PAGES;
+		vi.stubEnv("CF_PAGES", "1");
 	});
 
 	/**
@@ -168,6 +163,63 @@ describe("pages deployment tail", () => {
 				"debug",
 				true
 			);
+			await api.closeHelper();
+		});
+
+		it("passes default environment to deployments list", async () => {
+			api = mockTailAPIs();
+			expect(api.requests.creation.length).toStrictEqual(0);
+
+			await runWrangler(
+				"pages deployment tail --project-name mock-project mock-deployment-id"
+			);
+
+			await expect(api.ws.connected).resolves.toBeTruthy();
+			console.log(api.requests.deployments.queryParams[0]);
+			expect(api.requests.deployments.count).toStrictEqual(1);
+			expect(
+				api.requests.deployments.queryParams[0].find(([key, _]) => {
+					return key === "env";
+				})
+			).toStrictEqual(["env", "production"]);
+			await api.closeHelper();
+		});
+
+		it("passes production environment to deployments list", async () => {
+			api = mockTailAPIs();
+			expect(api.requests.creation.length).toStrictEqual(0);
+
+			await runWrangler(
+				"pages deployment tail --project-name mock-project mock-deployment-id --environment production"
+			);
+
+			await expect(api.ws.connected).resolves.toBeTruthy();
+			console.log(api.requests.deployments.queryParams[0]);
+			expect(api.requests.deployments.count).toStrictEqual(1);
+			expect(
+				api.requests.deployments.queryParams[0].find(([key, _]) => {
+					return key === "env";
+				})
+			).toStrictEqual(["env", "production"]);
+			await api.closeHelper();
+		});
+
+		it("passes preview environment to deployments list", async () => {
+			api = mockTailAPIs();
+			expect(api.requests.creation.length).toStrictEqual(0);
+
+			await runWrangler(
+				"pages deployment tail --project-name mock-project mock-deployment-id --environment preview"
+			);
+
+			await expect(api.ws.connected).resolves.toBeTruthy();
+			console.log(api.requests.deployments.queryParams[0]);
+			expect(api.requests.deployments.count).toStrictEqual(1);
+			expect(
+				api.requests.deployments.queryParams[0].find(([key, _]) => {
+					return key === "env";
+				})
+			).toStrictEqual(["env", "preview"]);
 			await api.closeHelper();
 		});
 	});
@@ -754,18 +806,7 @@ function serialize(message: TailEventMessage): WebSocket.RawData {
  * @param event A TailEvent
  * @returns true if `event` is a RequestEvent
  */
-function isRequest(
-	event:
-		| ScheduledEvent
-		| RequestEvent
-		| AlarmEvent
-		| EmailEvent
-		| TailEvent
-		| TailInfo
-		| QueueEvent
-		| undefined
-		| null
-): event is RequestEvent {
+function isRequest(event: TailEventMessageType): event is RequestEvent {
 	return Boolean(event && "request" in event);
 }
 
@@ -787,7 +828,7 @@ function deserializeToJson(message: WebSocket.RawData): string {
  */
 type MockAPI = {
 	requests: {
-		deployments: RequestCounter;
+		deployments: RequestLogger;
 		creation: RequestInit[];
 		deletion: RequestCounter;
 	};
@@ -797,16 +838,28 @@ type MockAPI = {
 };
 
 /**
+ * A logger used to check how many times a mock API has been hit.
+ * Useful as a helper in our testing to check if wrangler is making
+ * the correct API calls without actually sending any web traffic.
+ */
+type RequestLogger = {
+	count: number;
+	queryParams: [string, string][][];
+};
+
+/**
  * Mock out the API hit during Tail creation
  *
  * @returns a `RequestCounter` for counting how many times the API is hit
  */
-function mockListDeployments(): RequestCounter {
-	const requests: RequestCounter = { count: 0 };
+function mockListDeployments(): RequestLogger {
+	const requests: RequestLogger = { count: 0, queryParams: [] };
 	msw.use(
 		http.get(
 			`*/accounts/:accountId/pages/projects/:projectName/deployments`,
-			() => {
+			({ request }) => {
+				const url = new URL(request.url);
+				requests.queryParams.push(Array.from(url.searchParams.entries()));
 				requests.count++;
 				return HttpResponse.json(
 					{
@@ -842,15 +895,6 @@ function mockListDeployments(): RequestCounter {
 
 	return requests;
 }
-
-/**
- * A counter used to check how many times a mock API has been hit.
- * Useful as a helper in our testing to check if wrangler is making
- * the correct API calls without actually sending any web traffic
- */
-type RequestCounter = {
-	count: number;
-};
 
 /**
  * Mock out the API hit during Tail creation
@@ -916,6 +960,15 @@ const mockEmailEventTo = "to@example.com";
 const mockEmailEventSize = 45416;
 
 /**
+ * A counter used to check how many times a mock API has been hit.
+ * Useful as a helper in our testing to check if wrangler is making
+ * the correct API calls without actually sending any web traffic
+ */
+type RequestCounter = {
+	count: number;
+};
+
+/**
  * Mock out the API hit during Tail deletion
  *
  * @returns a `RequestCounter` for counting how many times the API is hit
@@ -954,7 +1007,7 @@ function mockTailAPIs(): MockAPI {
 		requests: {
 			deletion: { count: 0 },
 			creation: [],
-			deployments: { count: 0 },
+			deployments: { count: 0, queryParams: [] },
 		},
 		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		ws: null!, // will be set in the `beforeEach()`.

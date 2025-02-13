@@ -1,11 +1,12 @@
 import { readConfig } from "../config";
 import { logger } from "../logger";
 import { getByIds } from "./client";
-import { vectorizeBetaWarning } from "./common";
+import { vectorizeGABanner } from "./common";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
 } from "../yargs-types";
+import type { VectorizeVectorIds } from "./types";
 
 export function options(yargs: CommonYargsArgv) {
 	return yargs
@@ -23,13 +24,13 @@ export function options(yargs: CommonYargsArgv) {
 				coerce: (arg: unknown[]) => arg.map((a) => a?.toString() ?? ""),
 			},
 		})
-		.epilogue(vectorizeBetaWarning);
+		.epilogue(vectorizeGABanner);
 }
 
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	if (args.ids.length === 0) {
 		logger.error("🚨 Please provide valid vector identifiers.");
@@ -37,7 +38,12 @@ export async function handler(
 	}
 
 	logger.log(`📋 Fetching vectors...`);
-	const vectors = await getByIds(config, args.name, args.ids);
+
+	const ids: VectorizeVectorIds = {
+		ids: args.ids,
+	};
+
+	const vectors = await getByIds(config, args.name, ids);
 
 	if (vectors.length === 0) {
 		logger.warn(

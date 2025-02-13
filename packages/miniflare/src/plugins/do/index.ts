@@ -4,10 +4,10 @@ import { Worker_Binding } from "../../runtime";
 import { getUserServiceName } from "../core";
 import {
 	getPersistPath,
-	kProxyNodeBinding,
 	kUnsafeEphemeralUniqueKey,
 	PersistenceSchema,
 	Plugin,
+	ProxyNodeBinding,
 	UnsafeUniqueKey,
 } from "../shared";
 
@@ -19,6 +19,7 @@ export const DurableObjectsOptionsSchema = z.object({
 				z.object({
 					className: z.string(),
 					scriptName: z.string().optional(),
+					useSQLite: z.boolean().optional(),
 					// Allow `uniqueKey` to be customised. We use in Wrangler when setting
 					// up stub Durable Objects that proxy requests to Durable Objects in
 					// another `workerd` process, to ensure the IDs created by the stub
@@ -44,6 +45,7 @@ export function normaliseDurableObject(
 ): {
 	className: string;
 	serviceName?: string;
+	enableSql?: boolean;
 	unsafeUniqueKey?: UnsafeUniqueKey;
 	unsafePreventEviction?: boolean;
 } {
@@ -53,11 +55,18 @@ export function normaliseDurableObject(
 		isObject && designator.scriptName !== undefined
 			? getUserServiceName(designator.scriptName)
 			: undefined;
+	const enableSql = isObject ? designator.useSQLite : undefined;
 	const unsafeUniqueKey = isObject ? designator.unsafeUniqueKey : undefined;
 	const unsafePreventEviction = isObject
 		? designator.unsafePreventEviction
 		: undefined;
-	return { className, serviceName, unsafeUniqueKey, unsafePreventEviction };
+	return {
+		className,
+		serviceName,
+		enableSql,
+		unsafeUniqueKey,
+		unsafePreventEviction,
+	};
 }
 
 export const DURABLE_OBJECTS_PLUGIN_NAME = "do";
@@ -83,7 +92,9 @@ export const DURABLE_OBJECTS_PLUGIN: Plugin<
 	},
 	getNodeBindings(options) {
 		const objects = Object.keys(options.durableObjects ?? {});
-		return Object.fromEntries(objects.map((name) => [name, kProxyNodeBinding]));
+		return Object.fromEntries(
+			objects.map((name) => [name, new ProxyNodeBinding()])
+		);
 	},
 	async getServices({
 		sharedOptions,

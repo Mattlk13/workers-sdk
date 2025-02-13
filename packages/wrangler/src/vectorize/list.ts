@@ -1,7 +1,7 @@
 import { readConfig } from "../config";
 import { logger } from "../logger";
 import { listIndexes } from "./client";
-import { deprecatedV1DefaultFlag, vectorizeBetaWarning } from "./common";
+import { deprecatedV1DefaultFlag, vectorizeGABanner } from "./common";
 import type {
 	CommonYargsArgv,
 	StrictYargsOptionsToInterface,
@@ -19,13 +19,13 @@ export function options(yargs: CommonYargsArgv) {
 			default: deprecatedV1DefaultFlag,
 			describe: "List deprecated Vectorize V1 indexes for your account.",
 		})
-		.epilogue(vectorizeBetaWarning);
+		.epilogue(vectorizeGABanner);
 }
 
 export async function handler(
 	args: StrictYargsOptionsToInterface<typeof options>
 ) {
-	const config = readConfig(args.config, args);
+	const config = readConfig(args);
 
 	logger.log(`📋 Listing Vectorize indexes...`);
 	const indexes = await listIndexes(config, args.deprecatedV1);
